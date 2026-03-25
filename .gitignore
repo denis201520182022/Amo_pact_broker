@@ -9,3 +9,4 @@ logs
 .ruff_cache
 /venv
 temp.md
+alembic/
