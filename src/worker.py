@@ -13,16 +13,15 @@ from src.core.redis_client import scheduler
 # Настраиваем логи для воркера
 logger = setup_logging("worker")
 
-# 1. Настройка брокера TaskIQ
+# 1. Настройка брокера TaskIQ (Правильная цепочка вызовов)
 result_backend = RedisAsyncResultBackend(redis_url=settings.REDIS_URL)
-broker = ListQueueBroker(
-    url=settings.REDIS_URL,
-    result_backend=result_backend,
-).with_result_backend(result_backend)
-broker.with_result_backend(result_backend)
-broker.with_schedule_source(scheduler) 
+broker = ListQueueBroker(url=settings.REDIS_URL)
 
+# Важно: Перезаписываем переменную broker результатом настроек
+broker = broker.with_result_backend(result_backend)
+broker = broker.with_schedule_source(scheduler) 
 
+# Теперь декоратор @broker.task будет использовать полностью настроенный брокер
 @broker.task(
     task_name="process_pact_messages",
     retry_on_error=True,

@@ -76,6 +76,7 @@ async def pact_webhook(request: Request):
         is_first = await redis_manager.add_message_to_buffer(conversation_id, payload)
 
         if is_first:
+            # После исправления в worker.py этот вызов станет работать корректно
             await process_pact_messages_task.kiq(conversation_id).schedule_by_delay(
                 delay=settings.DEBOUNCE_SECONDS
             )
