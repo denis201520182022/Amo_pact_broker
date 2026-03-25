@@ -9,7 +9,7 @@ from src.core.redis_client import redis_manager
 from src.db.database import async_session_maker
 from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
-
+from src.core.redis_client import scheduler
 # Настраиваем логи для воркера
 logger = setup_logging("worker")
 
@@ -19,6 +19,9 @@ broker = ListQueueBroker(
     url=settings.REDIS_URL,
     result_backend=result_backend,
 ).with_result_backend(result_backend)
+broker.with_result_backend(result_backend)
+broker.with_schedule_source(scheduler) 
+
 
 @broker.task(
     task_name="process_pact_messages",

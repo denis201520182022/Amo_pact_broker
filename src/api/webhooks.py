@@ -76,10 +76,9 @@ async def pact_webhook(request: Request):
         is_first = await redis_manager.add_message_to_buffer(conversation_id, payload)
 
         if is_first:
-            # Сначала создаем объект кикера, а потом вызываем его асинхронно
-            kicker = process_pact_messages_task.kiq(conversation_id)
-            await kicker.schedule_by_delay(delay=settings.DEBOUNCE_SECONDS)
-            
+            await process_pact_messages_task.kiq(conversation_id).schedule_by_delay(
+                delay=settings.DEBOUNCE_SECONDS
+            )
             logger.info(f"📥 [Pact] Первое сообщение в диалоге {conversation_id}. Задача создана.")
         else:
             logger.info(f"📥 [Pact] Добавлено сообщение в буфер диалога {conversation_id}")
