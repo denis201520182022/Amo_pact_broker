@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8", 
         extra="ignore"
     )
-
+    TEST: bool = False 
     # --- Project ---
     PROJECT_NAME: str = "AI Broker Bot"
     DEBUG: bool = False
