@@ -1,0 +1,14 @@
+# config/settings.yaml
+prices:
+  consultation: "5 000 ₽"
+  commission: "процент от суммы"
+
+links:
+  bureau_1: "https://online.scoring.ru"
+  bureau_2: "https://credistory.ru"
+  bureau_3: "https://nbki.ru"
+  working_chat: "https://t.me/your_working_chat"
+  privacy_policy: "https://yourdomain.com/privacy"
+
+allowed_pipelines:
+  - 3104455 # Заявка с сайта 2021

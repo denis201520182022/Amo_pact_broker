@@ -1,0 +1,11 @@
+.env
+__pycache__
+logs
+.venv/
+.pytest_cache
+.coverage
+.mypy_cache
+.ruff_cache
+.ruff_cache
+/venv
+temp.md
