@@ -51,6 +51,12 @@ async def process_pact_messages_task(conversation_id: str):
     Production-ready задача обработки диалога:
     Биллинг -> Синхронизация ID -> Сохранение сообщений -> Ответ ИИ
     """
+    
+    if not redis_manager.redis:
+        logger.info(f"🔄 [Worker] Реинициализация Redis для задачи {conversation_id}")
+        await redis_manager.connect()
+    # -----------------------
+
     logger.info(f"--- [Worker] Начало обработки диалога {conversation_id} ---")
     
     async with async_session_maker() as session:
