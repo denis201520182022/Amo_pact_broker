@@ -25,8 +25,8 @@ services:
     image: redis:7-alpine
     container_name: ai_broker_redis
     restart: always
-    ports:
-      - "6379:6379"
+    # ports:
+    #   - "6379:6379"
 
   # FastAPI сервер
   api:
