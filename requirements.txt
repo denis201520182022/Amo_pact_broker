@@ -1,13 +1,15 @@
 fastapi
 uvicorn[standard]
+pydantic
+pydantic-settings
 sqlalchemy[asyncio]
 asyncpg
 alembic
-pydantic-settings
-pyyaml
 redis
-taskiq[redis]  # Или celery[redis]
-openai
-langgraph
-pydantic>=2.0
-python-json-logger
+taskiq
+taskiq-redis
+httpx
+tenacity
+aiogram
+python-multipart
+watchfiles
