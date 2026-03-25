@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_ADMIN_CHAT_ID: Optional[int] = None
+    TELEGRAM_USER_IDS: Optional[str] = None  # Список ID через запятую
+    TELEGRAM_REPORT_CHAT_ID: Optional[str] = None  # ID чата для карточек-отчетов
 
     # --- Proxy ---
     PROXY_HOST: Optional[str] = None

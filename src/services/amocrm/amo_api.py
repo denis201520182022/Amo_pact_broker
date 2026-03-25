@@ -121,5 +121,33 @@ class AmoCRMAPI:
             logger.error(f"🚨 Сбой при POST /notes для сделки {lead_id}: {e}")
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(httpx.HTTPError),
+        reraise=True
+    )
+    async def get_lead(self, lead_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Получение данных конкретной сделки по ID.
+        """
+        url = f"{self.base_url}/leads/{lead_id}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=self.headers)
+                
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code == 204:
+                    logger.warning(f"⚠️ Сделка {lead_id} не найдена в amoCRM (вернулся код 204).")
+                    return None
+                
+                logger.error(f"❌ Ошибка получения сделки {lead_id} в амо: {response.text}")
+                response.raise_for_status()
+        except Exception as e:
+            logger.error(f"🚨 Сбой при GET /leads/{lead_id}: {e}")
+            raise
+    
 # Создаем синглтон
 amo_api = AmoCRMAPI()

@@ -11,8 +11,14 @@ from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
 from src.core.redis_client import scheduler
 from decimal import Decimal
-
+from src.logic.graph import app_graph
+from src.logic.states import Steps, DialogueState
+# Также нам понадобятся настройки для логики CRM
+from src.logic.graph import SETTINGS_DATA
+from src.services.amocrm.amo_api import amo_api
 # Настраиваем логи для воркера
+from src.services.telegram.tg import tg_service
+  # Укажи правильный путь до файла
 logger = setup_logging("worker")
 
 # 1. Настройка брокера TaskIQ
@@ -124,27 +130,89 @@ async def process_pact_messages_task(conversation_id: str):
                 if amo_id_from_cache:
                     dialogue.amo_lead_id = str(amo_id_from_cache)
                     logger.info(f"🔗 Связано с amoCRM Lead ID: {amo_id_from_cache}")
+                    # Сразу коммитим привязку
+                    await session.commit()
 
-            # 4. Перенос сообщений из Redis Buffer в Postgres
+            # 3.5. ПРОВЕРКА ВОРОНКИ AMO CRM (РАЗРЕШЕНО ЛИ БОТУ ТУТ РАБОТАТЬ?)
+            if dialogue.amo_lead_id and dialogue.status != "completed":
+                lead_data = await amo_api.get_lead(dialogue.amo_lead_id)
+                
+                if lead_data:
+                    pipeline_id = lead_data.get("pipeline_id")
+                    allowed_pipelines = settings.ALLOWED_PIPELINES
+                    
+                    # Если список разрешенных задан, и текущей воронки в нем нет
+                    if allowed_pipelines and (pipeline_id not in allowed_pipelines):
+                        logger.info(f"🛑 Сделка {dialogue.amo_lead_id} находится в неразрешенной воронке {pipeline_id}. Бот отключается.")
+                        dialogue.status = "completed"
+                        await session.commit()
+                        
+                        # Очищаем буфер сообщений, чтобы не копился мусор
+                        await redis_manager.delete_buffer(conversation_id)
+                        return  # Прерываем обработку задачи
+
+            # Блок 4 (Перенос из Redis в Postgres)
+            if dialogue and dialogue.status == "completed":
+                logger.info("⏭️ Диалог завершен или отключен. Бот больше не отвечает.")
+                # Очищаем буфер на случай, если юзер продолжает спамить после завершения
+                await redis_manager.delete_buffer(conversation_id)
+                return 
+
             new_messages = await redis_manager.get_buffer(conversation_id)
             if new_messages:
-                formatted = [
-                    {
-                        "role": "user", 
-                        "content": m["text"], 
-                        "timestamp": asyncio.get_event_loop().time(),
-                        "raw_data": m # Сохраняем метаданные на всякий случай
-                    } 
-                    for m in new_messages
-                ]
+                extracted = dict(dialogue.extracted_data or {})
+                if "received_files" not in extracted: extracted["received_files"] = []
                 
-                # Мутируем историю (SQLAlchemy JSONB требует перезаписи списка)
+                formatted = []
+                for m in new_messages:
+                    # Обработка текста
+                    if m["text"]:
+                        formatted.append({"role": "user", "content": m["text"], "timestamp": asyncio.get_event_loop().time()})
+                    
+                    # ОБРАБОТКА ФАЙЛОВ
+                    for att in m.get("attachments", []):
+                        file_name = att.get("file_name", "unknown.file").lower()
+                        # Проверяем, что это PDF
+                        if file_name.endswith(".pdf"):
+                            # Добавляем в список полученных (если еще не было такого файла)
+                            if file_name not in extracted["received_files"]:
+                                extracted["received_files"].append(file_name)
+                                current_count = len(extracted["received_files"])
+                                
+                                # 1. Системное сообщение для ИИ
+                                formatted.append({
+                                    "role": "user", 
+                                    "content": f"[SYSTEM COMMAND] Пользователь прислал pdf файл {file_name}. Всего файлов: {len(extracted['received_files'])}/3"
+                                })
+                                
+                                # 2. ОТПРАВКА УВЕДОМЛЕНИЯ В ТЕЛЕГРАМ
+                                client_name = extracted.get("name", "Неизвестный клиент")
+                                credit_type = extracted.get("credit_type", "Не определен")
+                                
+                                # Формируем ссылку на карточку в amoCRM
+                                amo_link = None
+                                if dialogue.amo_lead_id:
+                                    amo_link = f"https://{settings.AMO_SUBDOMAIN}.amocrm.ru/leads/detail/{dialogue.amo_lead_id}"
+                                
+                                # Асинхронно отправляем карточку
+                                asyncio.create_task(tg_service.send_report_card(
+                                    title=f"📌 Новый файл от клиента: {client_name}",
+                                    fields={
+                                        "Имя файла": file_name,
+                                        "Тип запроса": credit_type,
+                                        "Получено файлов": f"{current_count} из 3"
+                                    },
+                                    link=amo_link
+                                ))
+                
+                # Обновляем историю и extracted_data (счетчик)
                 updated_history = list(dialogue.history)
                 updated_history.extend(formatted)
                 dialogue.history = updated_history
+                dialogue.extracted_data = extracted # Сохраняем обновленный список файлов
                 
-                # Сохраняем всё в БД
-                await session.commit() 
+                await session.commit()
+
                 logger.info(f"💾 {len(new_messages)} сообщений перенесено в Postgres.")
                 
                 # ТОЛЬКО ПОСЛЕ УСПЕШНОГО COMMIT удаляем из Redis
@@ -175,33 +243,129 @@ async def process_pact_messages_task(conversation_id: str):
 
 async def perform_logic_and_reply(dialogue: Dialogue, session):
     """
-    Логика формирования ответа и отправка через Pact API
+    Интеграция LangGraph: загрузка стейта -> выполнение графа -> сохранение итогов
     """
-    logger.info(f"🤖 Формирование ответа для диалога {dialogue.id}...")
+    logger.info(f"🤖 Запуск ИИ-логики для диалога {dialogue.pact_conversation_id}")
+
+    # 1. Готовим историю сообщений для OpenAI (чистим от лишних метаданных)
+    llm_history = [
+        {"role": msg["role"], "content": msg["content"]} 
+        for msg in dialogue.history
+    ]
+
+    # 2. Формируем входное состояние для графа
+    # Если шаг еще не задан (новое сообщение), начинаем с CONSENT
+    current_step = dialogue.current_state if dialogue.current_state != "START" else Steps.CONSENT
     
-    # --- ВРЕМЕННАЯ ЗАГЛУШКА ВМЕСТО OPENAI ---
-    # В будущем здесь будет вызов LangGraph / LLM
-    ai_reply_text = "Здравствуйте! Ваше сообщение получено и обрабатывается. Спасибо за ожидание!"
-    # ----------------------------------------
+    initial_state: DialogueState = {
+        "pact_conversation_id": dialogue.pact_conversation_id,
+        "amo_lead_id": dialogue.amo_lead_id,
+        "current_step": current_step,
+        "messages": llm_history,
+        "extracted_data": dialogue.extracted_data or {},
+        "files_count": len(dialogue.extracted_data.get("received_files", [])),
+        "analysis_result": None,
+        "ai_response": None,
+        "is_completed": False,
+        "stop_factors_found": dialogue.extracted_data.get("stop_factors_found", False)
+    }
 
-    # Отправляем через Pact API
-    # Нам нужен ID компании и провайдер (можем взять из последнего сообщения в истории)
-    success = await pact_api.send_message(
-        conversation_id=dialogue.pact_conversation_id,
-        message=ai_reply_text
-    )
+    try:
+        # 3. ЗАПУСК ГРАФА
+        final_state = await app_graph.ainvoke(initial_state)
+        
+        ai_reply_text = final_state.get("ai_response")
+        
+        if not ai_reply_text:
+            logger.error("⚠️ Граф не сгенерировал ответ (ai_response is None)")
+            return
 
-    if success:
-        # Обновляем историю в БД
-        new_entry = {
-            "role": "assistant",
-            "content": ai_reply_text,
-            "timestamp": asyncio.get_event_loop().time()
-        }
-        updated_history = list(dialogue.history)
-        updated_history.append(new_entry)
-        dialogue.history = updated_history
-        logger.info(f"📤 Ответ отправлен в Пакт и сохранен в историю.")
-    else:
-        logger.error(f"❌ Не удалось отправить ответ в Пакт для {dialogue.pact_conversation_id}")
-        raise Exception("Pact send failed")
+        # 4. Отправка ответа пользователю через Pact API
+        success = await pact_api.send_message(
+            conversation_id=dialogue.pact_conversation_id,
+            message=ai_reply_text
+        )
+
+        if success:
+            # 5. Обновляем модель Dialogue данными из графа
+            new_entry = {
+                "role": "assistant",
+                "content": ai_reply_text,
+                "timestamp": asyncio.get_event_loop().time()
+            }
+            
+            # Обновляем историю
+            updated_history = list(dialogue.history)
+            updated_history.append(new_entry)
+            dialogue.history = updated_history
+            
+            # Обновляем стейт и извлеченные данные
+            dialogue.current_state = final_state["current_step"]
+            dialogue.extracted_data = final_state["extracted_data"]
+            
+            # 6. ЛОГИКА CRM (Перевод сделки в другую воронку, если диалог завершен)
+            if final_state.get("is_completed"):
+                dialogue.status = "completed"
+                await handle_crm_completion(dialogue, final_state)
+
+            logger.info(f"📤 Ответ отправлен. Шаг изменен на: {dialogue.current_state}")
+        else:
+            logger.error(f"❌ Не удалось отправить ответ в Пакт")
+            raise Exception("Pact send failed")
+
+    except Exception as e:
+        logger.error(f"🚨 Ошибка при выполнении графа: {e}", exc_info=True)
+        raise e
+
+async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
+    """
+    Финальная обработка: перевод в воронки и создание анкеты в amoCRM
+    """
+    lead_id = dialogue.amo_lead_id
+    if not lead_id:
+        logger.warning(f"⚠️ Нет amo_lead_id для диалога {dialogue.pact_conversation_id}. Пропускаем CRM-логику.")
+        return
+
+    data = final_state.get('extracted_data', {})
+    current_step = final_state.get('current_step')
+    
+    # 1. ОПРЕДЕЛЯЕМ ЦЕЛЕВУЮ ВОРОНКУ
+    target_pipeline = None
+    
+    if current_step == Steps.COURSE_INFO:
+        target_pipeline = SETTINGS_DATA['amocrm_pipelines']['course_id']
+        logger.info(f"🎯 Направление: КУРС. Перевод сделки {lead_id}...")
+
+    elif current_step == Steps.CONSULT_INFO:
+        # Проверяем, согласился ли на оплату (из анализатора)
+        analysis = final_state.get('analysis_result', {})
+        if analysis.get('agree_to_pay'):
+            target_pipeline = SETTINGS_DATA['amocrm_pipelines']['consultation_id']
+            logger.info(f"🎯 Направление: КОНСУЛЬТАЦИЯ (оплачено). Перевод сделки {lead_id}...")
+
+    elif current_step == Steps.FINAL_HANDOVER:
+        target_pipeline = SETTINGS_DATA['amocrm_pipelines']['main_id']
+        logger.info(f"🎯 Направление: ОСНОВНОЙ КРЕДИТ. Перевод сделки {lead_id}...")
+
+    # 2. ПЕРЕВОДИМ СДЕЛКУ
+    if target_pipeline:
+        await amo_api.update_lead(lead_id=lead_id, pipeline_id=target_pipeline)
+
+    # 3. ФОРМИРУЕМ ИТОГОВУЮ АНКЕТУ (для основного сценария и консультаций)
+    if current_step in [Steps.FINAL_HANDOVER, Steps.CONSULT_INFO]:
+        # Собираем данные по списку из твоего сценария
+        # Используем .get(key, '—') чтобы не было пустых мест
+        summary = (
+            "📋 АНКЕТА ИЗ БОТА:\n"
+            f"👤 Имя: {data.get('name', '—')}\n"
+            f"📍 Город: {data.get('city', '—')}\n"
+            f"📞 Телефон: {data.get('phone', '—')}\n"
+            f"💰 Требуемая сумма: {data.get('required_amount') or data.get('car_cost') or '—'}\n"
+            f"🏦 Вид кредитования: {data.get('credit_type', '—')}\n"
+            f"🏠 Вид залога: {data.get('sub_type', 'Нет залога')}\n"
+            f"📑 Количество собственников: {'Один' if data.get('is_sole_owner') else 'Несколько'}\n"
+            f"⚠️ Стоп-факторы: {', '.join(data.get('found_factors', [])) if data.get('found_factors') else 'Не обнаружены'}"
+        )
+        
+        # Отправляем как примечание (тип service_message, чтобы выделялось)
+        await amo_api.add_note(lead_id=lead_id, text=summary, note_type="service_message")

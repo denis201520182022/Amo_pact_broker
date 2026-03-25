@@ -51,12 +51,13 @@ async def pact_webhook(request: Request):
         # 2. Извлечение основных данных
         conversation_id = str(obj.get("conversation_id"))
         contact_data = obj.get("contact", {})
-        
+        attachments = obj.get("attachments", [])
         # Данные для воркера
         payload = {
             "conversation_id": conversation_id,
             "external_id": str(contact_data.get("external_id")), # ID пользователя в мессенджере
             "text": obj.get("message", "").strip(),
+            "attachments": attachments,
             "company_id": obj.get("company_id"),
             "provider": obj.get("conversation", {}).get("provider"),
             "user_name": contact_data.get("name", "Unknown")

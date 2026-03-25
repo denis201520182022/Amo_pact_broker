@@ -13,3 +13,8 @@ tenacity
 aiogram
 python-multipart
 watchfiles
+openai
+langgraph
+langchain-core
+pyyaml
+typing-extensions

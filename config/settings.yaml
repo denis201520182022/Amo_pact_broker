@@ -1,14 +1,49 @@
-# config/settings.yaml
-prices:
-  consultation: "5 000 ₽"
-  commission: "процент от суммы"
-
+# --- ССЫЛКИ ---
 links:
-  bureau_1: "https://online.scoring.ru"
-  bureau_2: "https://credistory.ru"
-  bureau_3: "https://nbki.ru"
-  working_chat: "https://t.me/your_working_chat"
-  privacy_policy: "https://yourdomain.com/privacy"
+  # Политика конфиденциальности
+  privacy_policy: "https://tcb-tomsk.ru/privacy"
+  
+  # Авторский курс Татьяны Файзулиной
+  author_course: "https://tcb-tomsk.ru/course" # Замени на реальную, если отличается
+  
+  # Рабочий чат в Telegram для финализации
+  telegram_work_chat: "https://t.me/tcbtomsk"
+  
+  # Прямые ссылки на БКИ
+  bki_scoring: "https://online.scoring.ru"
+  bki_credistory: "https://credistory.ru"
+  bki_nbki: "https://nbki.ru"
 
-allowed_pipelines:
-  - 3104455 # Заявка с сайта 2021
+# --- СТОИМОСТЬ УСЛУГ ---
+pricing:
+  # Платная консультация (полный разбор)
+  paid_consultation: 10000
+  
+  # Разбор только кредитной истории
+  credit_history_review: 7000
+  
+  # Минимальная стоимость консультации (от...)
+  min_consultation_fee: 5000
+  
+  # Комиссия брокера (диапазон и среднее)
+  broker_fee_min_percent: 5
+  broker_fee_max_percent: 12
+  broker_fee_avg_percent: 10
+
+# --- ЛИМИТЫ И ПРАВИЛА ---
+limits:
+  # Максимальная сумма потреб. кредита без залога
+  max_consumer_loan_amount: 1500000
+  
+  # Минимальный стаж работы (в месяцах)
+  min_work_experience_months: 6
+  
+  # Количество необходимых отчетов БКИ
+  required_bki_reports: 3
+
+# --- ИДЕНТИФИКАТОРЫ amoCRM (Pipeline IDs) ---
+# Сюда нужно будет вписать ID воронок из твоего аккаунта amoCRM
+amocrm_pipelines:
+  main_id: 10559694        # Основная воронка (Кредиты)
+  course_id: 9757870        # Воронка "Авторский курс"
+  consultation_id: 10740002  # Воронка "Платная консультация"
