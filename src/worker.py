@@ -25,6 +25,21 @@ broker = (
 
 # Явно устанавливаем источник расписания для поддержки .schedule_by_delay()
 broker.schedule_source = scheduler 
+
+
+@broker.on_event("startup")
+async def worker_startup(state):
+    """Инициализация ресурсов при старте воркера"""
+    logger.info("👷 Worker starting up...")
+    await redis_manager.connect()
+    # Если ты используешь базу данных напрямую в задачах, 
+    # убедись, что движок SQLAlchemy тоже готов (у тебя сессия создается в задаче, так что ок)
+
+@broker.on_event("shutdown")
+async def worker_shutdown(state):
+    """Закрытие ресурсов при остановке воркера"""
+    logger.info("👷 Worker shutting down...")
+    await redis_manager.disconnect()
 # Теперь декоратор @broker.task будет использовать полностью настроенный брокер
 @broker.task(
     task_name="process_pact_messages",
