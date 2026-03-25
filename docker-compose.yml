@@ -55,7 +55,7 @@ services:
     build: .
     container_name: ai_broker_worker
     restart: always
-    command: taskiq worker src.worker:broker
+    command: taskiq worker src.worker:broker --ack-type on_success
     volumes:
       - .:/app
       - ./logs:/app/logs

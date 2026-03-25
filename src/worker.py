@@ -11,6 +11,7 @@ from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
 from src.core.redis_client import scheduler
 from decimal import Decimal
+
 # Настраиваем логи для воркера
 logger = setup_logging("worker")
 
@@ -150,13 +151,19 @@ async def process_pact_messages_task(conversation_id: str):
                 await redis_manager.delete_buffer(conversation_id)
             else:
                 logger.debug("Буфер Redis пуст, продолжаем работу с историей из БД.")
-
-            # 5. Обработка и генерация ответа
-            # Проверяем, нужно ли отвечать (последнее сообщение должно быть от user)
+            # 5. Генерация ответа
+            # Проверяем историю в БД. Если последнее сообщение от пользователя — отвечаем.
+            # Это покрывает и обычный ход, и восстановление после сбоя.
             if dialogue.history and dialogue.history[-1]["role"] == "user":
+                logger.info(f"⏳ Генерируем ответ для диалога {conversation_id}...")
                 await perform_logic_and_reply(dialogue, session)
+                
+                # Финальный коммит после отправки ответа
+                await session.commit()
             else:
-                logger.info("⏭️ Последнее сообщение не от пользователя, ответ не требуется.")
+                logger.info("⏭️ Ответ не требуется (последнее сообщение не от пользователя).")
+
+            logger.info(f"🏁 Диалог {conversation_id} успешно обработан.")
 
             await session.commit()
             logger.info(f"🏁 Диалог {conversation_id} успешно обработан.")
