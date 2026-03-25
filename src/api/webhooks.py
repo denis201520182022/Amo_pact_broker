@@ -76,9 +76,10 @@ async def pact_webhook(request: Request):
         is_first = await redis_manager.add_message_to_buffer(conversation_id, payload)
 
         if is_first:
-            # Правильный порядок: kicker -> delay -> kiq(аргументы)
-            await process_pact_messages_task.kicker().schedule_by_delay(
-                delay=settings.DEBOUNCE_SECONDS
+            # Используем .with_labels, чтобы планировщик (scheduler) понял, 
+            # что задачу нужно выполнить с задержкой.
+            await process_pact_messages_task.kicker().with_labels(
+                schedule_by_delay=settings.DEBOUNCE_SECONDS
             ).kiq(conversation_id)
             
             logger.info(f"📥 [Pact] Первое сообщение в диалоге {conversation_id}. Задача создана.")
