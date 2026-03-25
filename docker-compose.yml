@@ -36,7 +36,7 @@ services:
     # Пробрасываем 8020 (как настроено в Пакте) на 8000 внутри контейнера
     ports:
       - "8020:8000"
-    command: uvicorn src.utils.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
       - ./logs:/app/logs
