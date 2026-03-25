@@ -10,7 +10,7 @@ from src.db.database import async_session_maker
 from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
 from src.core.redis_client import scheduler
-from taskiq_redis import RedisAsyncResultBackend, RedisBroker
+
 # Настраиваем логи для воркера
 logger = setup_logging("worker")
 
@@ -19,7 +19,7 @@ result_backend = RedisAsyncResultBackend(redis_url=settings.REDIS_URL)
 
 # Создаем брокер и сразу привязываем бекенд результатов и источник расписания
 broker = (
-    RedisBroker(url=settings.REDIS_URL)
+    ListQueueBroker(url=settings.REDIS_URL)
     .with_result_backend(result_backend)
 )
 
