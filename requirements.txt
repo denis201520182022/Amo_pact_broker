@@ -13,4 +13,3 @@ tenacity
 aiogram
 python-multipart
 watchfiles
-taskiq-celery
