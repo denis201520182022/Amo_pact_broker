@@ -10,7 +10,7 @@ from src.db.database import async_session_maker
 from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
 from src.core.redis_client import scheduler
-
+from decimal import Decimal
 # Настраиваем логи для воркера
 logger = setup_logging("worker")
 
@@ -59,9 +59,10 @@ async def process_pact_messages_task(conversation_id: str):
                     return
 
                 # Стоимость создания диалога из тарифов (поле tariffs: {"dialog_cost": 10.0})
-                dialog_cost = app_settings.tariffs.get("dialog_cost", 0)
+                raw_cost = app_settings.tariffs.get("dialog_cost", 0)
+                dialog_cost = Decimal(str(raw_cost)) # Безопасное приведение через строку
 
-                # Атомарное списание: вычитаем только если баланс позволяет
+                # Атомарное списание
                 billing_update = (
                     update(AppSettings)
                     .where(AppSettings.id == app_settings.id)
