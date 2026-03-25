@@ -4,8 +4,20 @@ from src.core.redis_client import redis_manager
 from src.core.logging import logger
 from src.worker import process_pact_messages_task
 from src.core.config import settings
-
+import asyncio
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+
+async def delayed_trigger(conversation_id: str):
+    """
+    Фоновый таймер: спит 10 секунд и пинает воркер
+    """
+    await asyncio.sleep(settings.DEBOUNCE_SECONDS)
+    # Запускаем задачу воркера ОБЫЧНЫМ способом (мгновенно)
+    await process_pact_messages_task.kiq(conversation_id)
+    logger.info(f"🚀 [Debounce] 10 секунд прошло. Задача для {conversation_id} отправлена воркеру.")
+
 
 @router.post("/pact")
 async def pact_webhook(request: Request):
@@ -76,17 +88,14 @@ async def pact_webhook(request: Request):
         is_first = await redis_manager.add_message_to_buffer(conversation_id, payload)
 
         if is_first:
-            # Используем .with_labels, чтобы планировщик (scheduler) понял, 
-            # что задачу нужно выполнить с задержкой.
-            await process_pact_messages_task.kicker().with_labels(
-                schedule_by_delay=settings.DEBOUNCE_SECONDS
-            ).kiq(conversation_id)
-            
-            logger.info(f"📥 [Pact] Первое сообщение в диалоге {conversation_id}. Задача создана.")
+            # ЗАПУСКАЕМ ТАЙМЕР "В СТОРОНЕ" (не дожидаясь его завершения)
+            asyncio.create_task(delayed_trigger(conversation_id))
+            logger.info(f"📥 [Pact] Первое сообщение. Таймер на {settings.DEBOUNCE_SECONDS}с запущен.")
         else:
-            logger.info(f"📥 [Pact] Добавлено сообщение в буфер диалога {conversation_id}")
+            logger.info(f"📥 [Pact] Сообщение добавлено в буфер диалога {conversation_id}")
 
-        return {"status": "queued"}
+        # ПАКТ ПОЛУЧАЕТ ОТВЕТ МГНОВЕННО
+        return {"status": "accepted"}
 
     except json.JSONDecodeError:
         logger.error("Ошибка декодирования JSON в вебхуке Pact")

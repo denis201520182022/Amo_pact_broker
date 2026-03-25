@@ -86,21 +86,21 @@ services:
       redis:
         condition: service_started
 
-  # Планировщик TaskIQ - для отложенных задач (наши 10 сек)
-  scheduler:
-    build: .
-    container_name: ai_broker_scheduler
-    restart: always
-    command: taskiq scheduler src.worker:broker
-    volumes:
-      - .:/app
-    env_file:
-      - .env
-    environment:
-      - PYTHONPATH=/app
-    depends_on:
-      redis:
-        condition: service_started
+  # # Планировщик TaskIQ - для отложенных задач (наши 10 сек)
+  # scheduler:
+  #   build: .
+  #   container_name: ai_broker_scheduler
+  #   restart: always
+  #   command: taskiq scheduler src.worker:broker
+  #   volumes:
+  #     - .:/app
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - PYTHONPATH=/app
+  #   depends_on:
+  #     redis:
+  #       condition: service_started
 
 volumes:
   postgres_data:

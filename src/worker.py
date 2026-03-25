@@ -25,7 +25,7 @@ broker = (
 )
 
 # Явно устанавливаем источник расписания для поддержки .schedule_by_delay()
-broker.schedule_source = scheduler 
+# broker.schedule_source = scheduler 
 
 
 @broker.on_event("startup")
@@ -165,8 +165,7 @@ async def process_pact_messages_task(conversation_id: str):
 
             logger.info(f"🏁 Диалог {conversation_id} успешно обработан.")
 
-            await session.commit()
-            logger.info(f"🏁 Диалог {conversation_id} успешно обработан.")
+            
 
         except Exception as e:
             await session.rollback()
