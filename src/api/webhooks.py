@@ -66,10 +66,9 @@ async def pact_webhook(request: Request):
         if not conversation_id or not payload["text"]:
             return Response(status_code=200)
 
-        # --- Логика сопоставления с amoCRM ---
-        user_name_norm = str(payload['user_name']).strip().lower()
-        text_norm = " ".join(payload['text'].split()).lower() # Убираем двойные пробелы и \n
-        match_key = f"match:{user_name_norm}:{text_norm}"[:200]
+         # Оставляем только текст, так как имена в Пакте и Амо часто не совпадают
+        text_norm = " ".join(payload['text'].split()).lower()
+        match_key = f"match:text:{text_norm}"[:200]
         
         # 1. Сохраняем свой ID (для амо, если он придет позже)
         await redis_manager.redis.setex(f"pact_id:{match_key}", 60, conversation_id)
@@ -112,9 +111,10 @@ async def amo_webhook(request: Request):
     Принимает вебхук от amoCRM для сопоставления сделки с чатом Пакта.
     """
     try:
+        logger.info(f"📥 [Amo] Получен вебхук: {request.method} {request.url}")
         # Амо присылает данные в формате x-www-form-urlencoded
         form_data = await request.form()
-        
+        logger.info(f"📥 [Amo] Получены данные: {form_data}")
         # Извлекаем данные из структуры: message[add][0][...]
         text = form_data.get("message[add][0][text]")
         lead_id = form_data.get("message[add][0][entity_id]")
@@ -127,9 +127,8 @@ async def amo_webhook(request: Request):
 
         # Создаем ключ для сопоставления (Имя + Текст)
         # Ограничим длину текста, чтобы ключ не был гигантским
-        author_norm = str(author_name).strip().lower()
         text_norm = " ".join(text.split()).lower()
-        match_key = f"match:{author_norm}:{text_norm}"[:200]
+        match_key = f"match:text:{text_norm}"[:200]
         
         # Сохраняем ID сделки в Redis на 60 секунд
         await redis_manager.redis.setex(f"amo_id:{match_key}", 60, str(lead_id))
