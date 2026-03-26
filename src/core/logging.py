@@ -17,44 +17,40 @@ class CustomFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging(service_name: str):
-    """
-    Настройка логирования:
-    service_name: 'api', 'worker', 'scheduler' или 'tg_bot'
-    """
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     
     # 1. Корневой логгер
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-    root_logger.handlers = []
+    
+    # Очищаем старые хендлеры, чтобы не дублировать логи при повторных вызовах
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
 
-    # 2. Вывод в консоль (Docker stdout)
+    # 2. Вывод в консоль
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
     root_logger.addHandler(console_handler)
 
-    # 3. Запись в файл (только для нашего кода 'src')
+    # 3. Настройка логгера проекта
+    project_logger = logging.getLogger("src")
+    project_logger.propagate = True 
+    
+    # Удаляем старые файловые хендлеры у логгера src, если они были
+    for handler in project_logger.handlers[:]:
+        if isinstance(handler, RotatingFileHandler):
+            project_logger.removeHandler(handler)
+
+    # Добавляем новый файловый хендлер
     file_name = f"{LOGS_DIR}/{service_name}.log"
     file_handler = RotatingFileHandler(
         file_name, 
-        maxBytes=10 * 1024 * 1024,  # Увеличил до 10 MB
-        backupCount=5,             # Хранить 5 старых файлов
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
         encoding="utf-8"
     )
     file_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
-    
-    project_logger = logging.getLogger("src")
-    project_logger.propagate = True 
     project_logger.addHandler(file_handler)
-
-    # --- Настройка уровней для сторонних библиотек ---
-    # Убираем лишний спам, оставляем только важное (WARNING и выше)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-    logging.getLogger("aioredis").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)     # Скрываем логи запросов к OpenAI/Pact/Amo
-    logging.getLogger("aiogram").setLevel(logging.INFO)     # ТГ бот пусть пишет общие инфо
-    logging.getLogger("taskiq").setLevel(logging.INFO)      # Логи задач
 
     return project_logger
 
