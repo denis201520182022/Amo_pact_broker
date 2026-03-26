@@ -37,7 +37,7 @@ def get_main_kb():
     builder.button(text="📊 Статистика", callback_data="stats")
     builder.button(text="💰 Пополнить баланс", callback_data="add_balance")
     builder.button(text="⚙️ Изменить тариф", callback_data="set_tariff")
-    builder.button(text="🛑 Остановка", callback_data="system_stop")
+    # builder.button(text="🛑 Остановка", callback_data="system_stop")
     builder.adjust(2)
     return builder.as_markup()
 

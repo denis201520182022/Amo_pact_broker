@@ -1,6 +1,7 @@
 import os
 import json
 from datetime import datetime
+from typing import Any  # <--- ДОБАВЬ ЭТУ СТРОКУ
 
 class DialogueLogger:
     def __init__(self, conversation_id: str):
