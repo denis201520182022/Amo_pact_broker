@@ -5,12 +5,13 @@ from src.core.redis_client import redis_manager
 from src.core.logging import setup_logging
 from src.core.config import settings
 
-# Настраиваем логи для API
-logger = setup_logging("api")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- Startup ---
+    # Настраиваем логи для API
+    logger = setup_logging("api")
     await redis_manager.connect()
     logger.info("🚀 API Service Started (Redis connected)")
     yield

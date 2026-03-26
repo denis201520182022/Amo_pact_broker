@@ -4,16 +4,15 @@ import os
 from logging.handlers import RotatingFileHandler
 from src.core.config import settings
 
-# Определяем путь к логам абсолютно
 LOGS_DIR = os.path.join(os.getcwd(), "logs")
 
 class CustomFormatter(logging.Formatter):
-    fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+    # Добавили [%(process)d], чтобы отличать процессы воркера
+    fmt = "%(asctime)s | %(levelname)-8s | [%(process)d] %(name)s:%(funcName)s:%(lineno)d - %(message)s"
     def format(self, record):
         return super().format(record)
 
 def setup_logging(service_name: str):
-    """Настройка логирования для конкретного сервиса"""
     if not os.path.exists(LOGS_DIR):
         try:
             os.makedirs(LOGS_DIR)
@@ -21,25 +20,27 @@ def setup_logging(service_name: str):
 
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     
-    # Настраиваем корневой логгер
+    # 1. Настройка корневого логгера
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     
-    # Очищаем старые хендлеры, чтобы не дублировать логи в консоль
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
+    # Очищаем все хендлеры у корня
+    root_logger.handlers = []
 
-    # Добавляем вывод в консоль
+    # Консоль
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
     root_logger.addHandler(console_handler)
 
-    # Настраиваем логгер проекта ("src")
+    # 2. Настройка логгера проекта ("src")
     project_logger = logging.getLogger("src")
     project_logger.setLevel(log_level)
+    
+    # КРИТИЧЕСКИ ВАЖНО: Удаляем ВСЕ хендлеры, которые могли быть добавлены при импортах
+    project_logger.handlers = [] 
     project_logger.propagate = True 
 
-    # Добавляем файл с задержкой открытия (delay=True) для Docker/TaskIQ
+    # Добавляем файл
     file_path = os.path.join(LOGS_DIR, f"{service_name}.log")
     file_handler = RotatingFileHandler(
         file_path, 
@@ -51,7 +52,7 @@ def setup_logging(service_name: str):
     file_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
     project_logger.addHandler(file_handler)
 
-    # Тишим спам от библиотек
+    # Тишим библиотеки
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -59,5 +60,5 @@ def setup_logging(service_name: str):
 
     return project_logger
 
-# ЭКСПОРТИРУЕМ ОБЪЕКТ LOGGER (чтобы работали импорты в других файлах)
+# Экспортируем логгер
 logger = logging.getLogger("src")
