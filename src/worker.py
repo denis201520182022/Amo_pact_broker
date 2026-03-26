@@ -21,7 +21,7 @@ from src.services.amocrm.amo_api import amo_api
 from sqlalchemy import func
 from src.services.telegram.tg import tg_service
   # Укажи правильный путь до файла
-logger = setup_logging("worker")
+# logger = setup_logging("worker")
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -48,7 +48,7 @@ ogger = setup_logging("worker")
 async def worker_startup(state):
     """Инициализация ресурсов при старте воркера"""
     # ПЕРЕИНИЦИАЛИЗИРУЕМ ЛОГИ ДЛЯ КАЖДОГО ПРОЦЕССА ВОРКЕРА
-    # setup_logging("worker") 
+    setup_logging("worker") 
     logger.info("👷 Worker process starting up...")
     await redis_manager.connect()
 

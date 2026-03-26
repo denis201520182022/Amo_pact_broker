@@ -4,7 +4,8 @@ import os
 from logging.handlers import RotatingFileHandler
 from src.core.config import settings
 
-LOGS_DIR = os.path.join(os.getcwd(), "logs")
+# Жесткий путь для Docker
+LOGS_DIR = "/app/logs"
 
 class CustomFormatter(logging.Formatter):
     fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
@@ -12,50 +13,49 @@ class CustomFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging(service_name: str):
+    # Создаем папку, если её нет
     if not os.path.exists(LOGS_DIR):
         try:
-            os.makedirs(LOGS_DIR)
+            os.makedirs(LOGS_DIR, exist_ok=True)
         except: pass
 
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-    
-    # Консоль добавляем только если её еще нет
-    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
-        root_logger.addHandler(console_handler)
-
+    # Настраиваем наш логгер проекта
     project_logger = logging.getLogger("src")
     project_logger.setLevel(log_level)
-    project_logger.propagate = True 
+    
+    # КРИТИЧЕСКИ ВАЖНО: 
+    # 1. Запрещаем пробрасывать логи в Root (TaskIQ их больше не перехватит)
+    project_logger.propagate = False 
+    # 2. Очищаем все хендлеры, чтобы не дублировать
+    project_logger.handlers = []
 
-    # Удаляем старые ФАЙЛОВЫЕ хендлеры, чтобы не было дублей (api + worker)
-    for h in project_logger.handlers[:]:
-        if isinstance(h, RotatingFileHandler):
-            project_logger.removeHandler(h)
+    # Создаем форматтер
+    formatter = CustomFormatter()
 
-    # Добавляем файл
+    # ХЕНДЛЕР 1: В файл (теперь без delay для теста, чтобы файл создался сразу)
     file_path = os.path.join(LOGS_DIR, f"{service_name}.log")
     file_handler = RotatingFileHandler(
         file_path, 
         maxBytes=10 * 1024 * 1024,
         backupCount=5,
-        encoding="utf-8",
-        delay=True 
+        encoding="utf-8"
     )
-    file_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
+    file_handler.setFormatter(formatter)
     project_logger.addHandler(file_handler)
 
-    # Тишим библиотеки
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # ХЕНДЛЕР 2: В консоль (чтобы ты видел логи в docker logs)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    project_logger.addHandler(console_handler)
+
+    # Тишим спам библиотек
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
     return project_logger
 
-# Создаем базовый объект для импортов
+# Объект для импортов
 logger = logging.getLogger("src")
