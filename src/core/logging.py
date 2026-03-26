@@ -4,7 +4,7 @@ import os
 from logging.handlers import RotatingFileHandler
 from src.core.config import settings
 
-# Определяем пути абсолютно для Docker
+# Определяем путь к логам абсолютно
 LOGS_DIR = os.path.join(os.getcwd(), "logs")
 
 class CustomFormatter(logging.Formatter):
@@ -13,6 +13,7 @@ class CustomFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging(service_name: str):
+    """Настройка логирования для конкретного сервиса"""
     if not os.path.exists(LOGS_DIR):
         try:
             os.makedirs(LOGS_DIR)
@@ -24,23 +25,21 @@ def setup_logging(service_name: str):
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     
-    # Очищаем только если нет хендлеров, чтобы не дублировать в консоль
-    if not root_logger.handlers:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
-        root_logger.addHandler(console_handler)
+    # Очищаем старые хендлеры, чтобы не дублировать логи в консоль
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+
+    # Добавляем вывод в консоль
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
+    root_logger.addHandler(console_handler)
 
     # Настраиваем логгер проекта ("src")
     project_logger = logging.getLogger("src")
     project_logger.setLevel(log_level)
     project_logger.propagate = True 
 
-    # Удаляем существующие файловые хендлеры
-    for h in project_logger.handlers[:]:
-        if isinstance(h, RotatingFileHandler):
-            project_logger.removeHandler(h)
-
-    # Добавляем файл с задержкой (delay=True), чтобы подпроцессы TaskIQ не конфликтовали
+    # Добавляем файл с задержкой открытия (delay=True) для Docker/TaskIQ
     file_path = os.path.join(LOGS_DIR, f"{service_name}.log")
     file_handler = RotatingFileHandler(
         file_path, 
@@ -52,8 +51,13 @@ def setup_logging(service_name: str):
     file_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
     project_logger.addHandler(file_handler)
 
-    # Тишим спам
-    for lib in ["uvicorn.access", "sqlalchemy.engine", "aioredis", "httpx", "httpcore"]:
-        logging.getLogger(lib).setLevel(logging.WARNING)
+    # Тишим спам от библиотек
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
     return project_logger
+
+# ЭКСПОРТИРУЕМ ОБЪЕКТ LOGGER (чтобы работали импорты в других файлах)
+logger = logging.getLogger("src")
