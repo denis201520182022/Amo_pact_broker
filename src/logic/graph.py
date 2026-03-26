@@ -322,40 +322,58 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
     _, generator_sys = prompt_manager.get_system_prompts()
     base_instruction = prompt_manager.get_generator_instruction(state['current_step'])
     
-    # 2. Проверяем, был ли ответ пользователя невалидным (off-topic)
-    # Если да — добавляем Генератору указание проявить настойчивость
+    # 2. Формируем контекст извлеченных данных (Ground Truth)
+    # Это "отрезвляет" ИИ, показывая, какие данные уже в системе
+    data = state.get('extracted_data', {})
+    known_info = ", ".join([f"{k}: {v}" for k, v in data.items() if v])
+    known_info_context = f"\nТЕКУЩИЕ ДАННЫЕ КЛИЕНТА (УЖЕ СОБРАНО): {known_info if known_info else 'пока пусто'}"
+
+    # 3. Анализируем, был ли успешным переход в logic_node
     analysis = state.get('analysis_result') or {}
-    off_topic_hint = ""
-    if not analysis.get('step_completed') or analysis.get('off_topic'):
-        off_topic_hint = (
-            "\nВАЖНО: Пользователь не дал четкого ответа или ушел от темы. "
-            "Выполни ПРАВИЛО №3 из системного промпта: проигнорируй уход от темы "
-            "и настойчиво, но вежливо повтори свой вопрос."
+    is_step_success = analysis.get('step_completed', False)
+    is_off_topic = analysis.get('off_topic', False)
+
+    # Динамическая подсказка по поведению
+    if not is_step_success or is_off_topic:
+        # Если клиент ушел от темы — требуем настойчивости (Правило №3)
+        movement_hint = (
+            "\nКРИТИЧЕСКАЯ ПОДСКАЗКА: Пользователь не дал четкого ответа или ушел от темы. "
+            "Выполни ПРАВИЛО №3: проигнорируй его последнюю фразу и настойчиво, но вежливо ПОВТОРИ свой предыдущий вопрос."
+        )
+    else:
+        # Если шаг успешно пройден — даем команду на движение вперед
+        movement_hint = (
+            "\nКРИТИЧЕСКАЯ ПОДСКАЗКА: Пользователь ответил верно, данные сохранены. "
+            "ПЕРЕХОДИ К СЛЕДУЮЩЕМУ ВОПРОСУ согласно твоей инструкции ниже. "
+            "Не спрашивай то, что уже есть в блоке 'ТЕКУЩИЕ ДАННЫЕ КЛИЕНТА'."
         )
 
-    # 3. Форматируем инструкцию (подставляем ссылки, цены, список СТОП-ФАКТОРОВ)
-    # Передаем extracted_data, чтобы сработал плейсхолдер {found_factors}
-    formatted_instruction = format_instruction(base_instruction, state['extracted_data'])
+    # 4. Форматируем базовую инструкцию (ссылки, цены, стоп-факторы)
+    formatted_instruction = format_instruction(base_instruction, data)
     
-    # Подставляем счетчик файлов отдельно (так как он может меняться часто)
-    final_extra_instruction = formatted_instruction.replace(
+    # Подставляем счетчик файлов
+    final_step_instruction = formatted_instruction.replace(
         "{files_count}", str(state.get('files_count', 0))
     )
     
-    # Добавляем подсказку про off-topic к основной инструкции
-    final_extra_instruction += off_topic_hint
+    # 5. Собираем финальный "пинок" для OpenAI
+    # Объединяем контекст данных, инструкцию шага и подсказку по поведению
+    final_extra_instruction = (
+        f"{known_info_context}"
+        f"\nИНСТРУКЦИЯ НА ЭТОТ ХОД: {final_step_instruction}"
+        f"{movement_hint}"
+    )
     
     # ЛОГИРУЕМ ЗАПРОС К ГЕНЕРАТОРУ (AI-2)
     d_logger.log_section("AI-2 GENERATOR REQUEST", {
         "target_step": state['current_step'],
         "system_prompt_preview": generator_sys[:200] + "...",
-        "formatted_instruction": final_extra_instruction,
-        "history_limit": 5,
-        "current_files": state.get('files_count', 0)
+        "final_directive": final_extra_instruction,
+        "history_limit": 5
     })
     
-    # 4. Генерация ответа через OpenAI
-    # Берем последние 5 сообщений для сохранения контекста беседы
+    # 6. Генерация ответа
+    # Берем последние 5 сообщений истории для контекста беседы
     ai_text = await openai_service.generate_response(
         messages=state['messages'][-5:], 
         system_prompt=generator_sys,
@@ -366,7 +384,7 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
         ai_text = "Прошу прощения, возникла техническая заминка. Повторите, пожалуйста, ваш последний ответ."
         logger.error(f"❌ OpenAI AI-2 returned empty text for {conv_id}")
 
-    # ЛОГИРУЕМ ИТОГОВЫЙ ТЕКСТ, КОТОРЫЙ УЙДЕТ КЛИЕНТУ
+    # ЛОГИРУЕМ ИТОГОВЫЙ ТЕКСТ
     d_logger.log_section("AI-2 GENERATOR RESPONSE (FINAL TEXT)", ai_text)
     
     return {"ai_response": ai_text}
