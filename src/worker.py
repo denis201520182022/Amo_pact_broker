@@ -17,6 +17,7 @@ from src.logic.states import Steps, DialogueState
 from src.logic.graph import SETTINGS_DATA
 from src.services.amocrm.amo_api import amo_api
 # Настраиваем логи для воркера
+from sqlalchemy import func
 from src.services.telegram.tg import tg_service
   # Укажи правильный путь до файла
 logger = setup_logging("worker")
