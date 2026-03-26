@@ -41,13 +41,16 @@ broker = (
 # broker.schedule_source = scheduler 
 
 
+ogger = setup_logging("worker")
+
 @broker.on_event("startup")
 async def worker_startup(state):
     """Инициализация ресурсов при старте воркера"""
-    logger.info("👷 Worker starting up...")
+    # ПЕРЕИНИЦИАЛИЗИРУЕМ ЛОГИ ДЛЯ КАЖДОГО ПРОЦЕССА ВОРКЕРА
+    setup_logging("worker") 
+    logger.info("👷 Worker process starting up...")
     await redis_manager.connect()
-    # Если ты используешь базу данных напрямую в задачах, 
-    # убедись, что движок SQLAlchemy тоже готов (у тебя сессия создается в задаче, так что ок)
+
 
 @broker.on_event("shutdown")
 async def worker_shutdown(state):
@@ -392,16 +395,18 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
     """
     lead_id = dialogue.amo_lead_id
     if not lead_id:
-        logger.warning(f"⚠️ Нет amo_lead_id для диалога {dialogue.pact_conversation_id}. Пропускаем CRM-логику.")
+        logger.warning(f"⚠️ Нет amo_lead_id для диалога {dialogue.pact_conversation_id}")
         return
 
-    # 1. Берем решение прямо из ИИ-логики
+    # ИСПРАВЛЕНИЕ: Извлекаем данные из final_state
+    data = final_state.get('extracted_data', {})
+    current_step = final_state.get('current_step')
     dest = final_state.get('final_destination') 
     
-    # 2. Маппим ключ из графа на ID воронки из настроек
     pipelines = SETTINGS_DATA.get('amocrm_pipelines', {})
     target_pipeline = None
 
+    # Логика выбора воронки
     if dest == "course": 
         target_pipeline = pipelines.get('course_id')
     elif dest == "consultation": 
@@ -409,12 +414,10 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
 
     if target_pipeline:
         await amo_api.update_lead(lead_id=lead_id, pipeline_id=target_pipeline)
-        logger.info(f"🎯 Сделка {lead_id} переведена в воронку ID: {target_pipeline}")
+        logger.info(f"🎯 Сделка {lead_id} переведена в воронку {target_pipeline}")
 
-    # 3. ФОРМИРУЕМ ИТОГОВУЮ АНКЕТУ (для основного сценария и консультаций)
+    # ИСПРАВЛЕНИЕ: Проверка стейта теперь корректна
     if current_step in [Steps.FINAL_HANDOVER, Steps.CONSULT_INFO]:
-        # Собираем данные по списку из твоего сценария
-        # Используем .get(key, '—') чтобы не было пустых мест
         summary = (
             "📋 АНКЕТА ИЗ БОТА:\n"
             f"👤 Имя: {data.get('name', '—')}\n"
@@ -423,9 +426,9 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
             f"💰 Требуемая сумма: {data.get('required_amount') or data.get('car_cost') or '—'}\n"
             f"🏦 Вид кредитования: {data.get('credit_type', '—')}\n"
             f"🏠 Вид залога: {data.get('sub_type', 'Нет залога')}\n"
-            f"📑 Количество собственников: {'Один' if data.get('is_sole_owner') else 'Несколько'}\n"
+            f"📑 Собственник: {'Единственный' if data.get('is_sole_owner') else 'Несколько'}\n"
             f"⚠️ Стоп-факторы: {', '.join(data.get('found_factors', [])) if data.get('found_factors') else 'Не обнаружены'}"
         )
         
-        # Отправляем как примечание (тип service_message, чтобы выделялось)
         await amo_api.add_note(lead_id=lead_id, text=summary, note_type="service_message")
+        logger.info(f"📝 Анкета для {lead_id} отправлена в amoCRM")
