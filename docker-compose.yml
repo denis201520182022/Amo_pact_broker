@@ -48,16 +48,17 @@ services:
       redis:
         condition: service_started
 
-  # Воркер TaskIQ - логика обработки
+
+
   worker:
     build: .
     container_name: ai_broker_worker
     restart: always
-    command: taskiq worker src.worker:broker --ack-type when_executed
+    # ДОБАВИЛИ --workers 1
+    command: taskiq worker src.worker:broker --workers 1 --ack-type when_executed
     volumes:
       - .:/app
       - ./logs:/app/logs
-      - ./debug_logs:/app/debug_logs # Добавил папку для твоих новых логов
     env_file:
       - .env
     environment:
