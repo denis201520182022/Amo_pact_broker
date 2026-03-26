@@ -5,7 +5,8 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy import select, func, update
-
+# Добавь эту строку в начало файла к остальным импортам aiogram
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from src.services.telegram.tg import tg_service
 from src.core.logging import setup_logging
 from src.db.database import async_session_maker
