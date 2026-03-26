@@ -5,12 +5,19 @@ from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from src.core.config import settings
 from src.core.logging import logger
-
+from aiogram.client.session.aiohttp import AiohttpSession
 class TelegramService:
     def __init__(self):
-        self.bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+        # --- ЛОГИКА ПРОКСИ ---
+        session = None
+        if settings.proxy_url:
+            logger.info(f"🌐 Telegram Bot is using proxy: {settings.PROXY_HOST}")
+            session = AiohttpSession(proxy=settings.proxy_url)
+        
+        self.bot = Bot(token=settings.TELEGRAM_BOT_TOKEN, session=session)
         self.admin_id = settings.TELEGRAM_ADMIN_CHAT_ID
-        # Превращаем строку "ID,ID" в список чисел
+        
+        # Список разрешенных ID из .env
         self.user_ids = [
             int(uid.strip()) 
             for uid in (settings.TELEGRAM_USER_IDS or "").split(",") 

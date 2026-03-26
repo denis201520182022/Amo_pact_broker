@@ -25,21 +25,19 @@ services:
     image: redis:7-alpine
     container_name: ai_broker_redis
     restart: always
-    # ports:
-    #   - "6379:6379"
 
   # FastAPI сервер
   api:
     build: .
     container_name: ai_broker_api
     restart: always
-    # Пробрасываем 8020 (как настроено в Пакте) на 8000 внутри контейнера
     ports:
       - "8020:8000"
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
       - ./logs:/app/logs
+      - ./debug_logs:/app/debug_logs # Добавил папку для твоих новых логов
     env_file:
       - .env
     environment:
@@ -59,6 +57,7 @@ services:
     volumes:
       - .:/app
       - ./logs:/app/logs
+      - ./debug_logs:/app/debug_logs # Добавил папку для твоих новых логов
     env_file:
       - .env
     environment:
@@ -69,7 +68,7 @@ services:
       redis:
         condition: service_started
 
-  # Telegram Bot процесс
+  # Telegram Bot процесс (Админка)
   tg_bot:
     build: .
     container_name: ai_broker_tg
@@ -83,24 +82,27 @@ services:
     environment:
       - PYTHONPATH=/app
     depends_on:
+      db: # Бот теперь зависит от БД (статистика и баланс)
+        condition: service_healthy
       redis:
         condition: service_started
 
-  # # Планировщик TaskIQ - для отложенных задач (наши 10 сек)
-  # scheduler:
-  #   build: .
-  #   container_name: ai_broker_scheduler
-  #   restart: always
-  #   command: taskiq scheduler src.worker:broker
-  #   volumes:
-  #     - .:/app
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     - PYTHONPATH=/app
-  #   depends_on:
-  #     redis:
-  #       condition: service_started
+  # Воркер напоминаний
+  reminder_worker:
+    build: .
+    container_name: ai_broker_reminders
+    restart: always
+    command: python src/reminder_worker.py
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:

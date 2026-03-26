@@ -55,6 +55,7 @@ async def pact_webhook(request: Request):
         # Данные для воркера
         payload = {
             "conversation_id": conversation_id,
+            "message_id": str(obj.get("id", "")),
             "external_id": str(contact_data.get("external_id")), # ID пользователя в мессенджере
             "text": obj.get("message", "").strip(),
             "attachments": attachments,

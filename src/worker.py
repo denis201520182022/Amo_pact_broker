@@ -2,7 +2,7 @@ import asyncio
 from typing import Any, Dict, List
 from sqlalchemy import select, update
 from taskiq_redis import RedisAsyncResultBackend, ListQueueBroker
-
+from src.services.telegram.tg import tg_service
 from src.core.config import settings
 from src.core.logging import setup_logging
 from src.core.redis_client import redis_manager
@@ -20,7 +20,13 @@ from src.services.amocrm.amo_api import amo_api
 from src.services.telegram.tg import tg_service
   # Укажи правильный путь до файла
 logger = setup_logging("worker")
+import time
+from datetime import datetime, timezone, timedelta
 
+def get_msk_time() -> str:
+    """Возвращает текущее время по Москве в нужном формате"""
+    msk_tz = timezone(timedelta(hours=3))
+    return datetime.now(msk_tz).strftime("%Y-%m-%d %H:%M:%S MSK")
 # 1. Настройка брокера TaskIQ
 result_backend = RedisAsyncResultBackend(redis_url=settings.REDIS_URL)
 
@@ -112,6 +118,25 @@ async def process_pact_messages_task(conversation_id: str):
                     logger.error("❌ Нет активных аккаунтов amoCRM в базе!")
                     raise Exception("Account not found")
 
+                # --- ПРОВЕРКА ПОРОГА БАЛАНСА ДЛЯ АЛЕРТА ---
+                # Получаем обновленный баланс из объекта app_settings после списания
+                # (SQLAlchemy обновит значение в объекте после execute)
+                current_balance = app_settings.balance - dialog_cost
+                
+                if (current_balance <= app_settings.low_balance_threshold and 
+                    not app_settings.is_low_balance_alert_sent):
+                    
+                    alert_text = (
+                        f"⚠️ <b>ВНИМАНИЕ: НИЗКИЙ БАЛАНС</b>\n\n"
+                        f"Текущий остаток: <code>{current_balance}</code> руб.\n"
+                        f"Пожалуйста, пополните счет для бесперебойной работы бота."
+                    )
+                    # Отправляем всем пользователям из TELEGRAM_USER_IDS
+                    asyncio.create_task(tg_service.send_global_notification(alert_text))
+                    
+                    # Ставим флаг, чтобы не отправлять при каждом следующем списании
+                    app_settings.is_low_balance_alert_sent = True
+                # ------------------------------------------
                 # Создаем диалог
                 dialogue = Dialogue(
                     pact_conversation_id=conversation_id,
@@ -165,11 +190,20 @@ async def process_pact_messages_task(conversation_id: str):
                 
                 formatted = []
                 for m in new_messages:
-                    # Обработка текста
-                    if m["text"]:
-                        formatted.append({"role": "user", "content": m["text"], "timestamp": asyncio.get_event_loop().time()})
+                    # Извлекаем ID из Пакта или генерируем временный, если его нет
+                    msg_id = m.get("message_id") or f"user_{int(time.time() * 1000)}"
+                    msk_now = get_msk_time()
+
+                    # --- ОБРАБОТКА ТЕКСТА ---
+                    if m.get("text"):
+                        formatted.append({
+                            "role": "user",
+                            "content": m["text"],
+                            "message_id": msg_id,
+                            "timestamp_msk": msk_now
+                        })
                     
-                    # ОБРАБОТКА ФАЙЛОВ
+                    # --- ОБРАБОТКА ФАЙЛОВ ---
                     for att in m.get("attachments", []):
                         file_name = att.get("file_name", "unknown.file").lower()
                         # Проверяем, что это PDF
@@ -179,22 +213,22 @@ async def process_pact_messages_task(conversation_id: str):
                                 extracted["received_files"].append(file_name)
                                 current_count = len(extracted["received_files"])
                                 
-                                # 1. Системное сообщение для ИИ
+                                # 1. Системное сообщение для ИИ (формат как просил: с временем и ID)
                                 formatted.append({
                                     "role": "user", 
-                                    "content": f"[SYSTEM COMMAND] Пользователь прислал pdf файл {file_name}. Всего файлов: {len(extracted['received_files'])}/3"
+                                    "content": f"[SYSTEM COMMAND] Пользователь прислал pdf файл {file_name}. Всего файлов: {current_count}/3",
+                                    "message_id": f"sys_{int(time.time() * 1000)}",
+                                    "timestamp_msk": get_msk_time()
                                 })
                                 
-                                # 2. ОТПРАВКА УВЕДОМЛЕНИЯ В ТЕЛЕГРАМ
+                                # 2. ОТПРАВКА УВЕДОМЛЕНИЯ В ТЕЛЕГРАМ (Логика сохранена)
                                 client_name = extracted.get("name", "Неизвестный клиент")
                                 credit_type = extracted.get("credit_type", "Не определен")
                                 
-                                # Формируем ссылку на карточку в amoCRM
                                 amo_link = None
                                 if dialogue.amo_lead_id:
                                     amo_link = f"https://{settings.AMO_SUBDOMAIN}.amocrm.ru/leads/detail/{dialogue.amo_lead_id}"
                                 
-                                # Асинхронно отправляем карточку
                                 asyncio.create_task(tg_service.send_report_card(
                                     title=f"📌 Новый файл от клиента: {client_name}",
                                     fields={
@@ -205,18 +239,20 @@ async def process_pact_messages_task(conversation_id: str):
                                     link=amo_link
                                 ))
                 
-                # Обновляем историю и extracted_data (счетчик)
+                # Синхронизируем и сохраняем историю
                 updated_history = list(dialogue.history)
                 updated_history.extend(formatted)
                 dialogue.history = updated_history
-                dialogue.extracted_data = extracted # Сохраняем обновленный список файлов
-                
+                dialogue.extracted_data = extracted 
+                # ОБЯЗАТЕЛЬНО: Обновляем время и сбрасываем уровень напоминаний
+                dialogue.reminder_level = 0
+                dialogue.last_message_at = func.now()
                 await session.commit()
-
-                logger.info(f"💾 {len(new_messages)} сообщений перенесено в Postgres.")
+                logger.info(f"💾 {len(new_messages)} сообщений (с ID и MSK временем) перенесено в Postgres.")
                 
-                # ТОЛЬКО ПОСЛЕ УСПЕШНОГО COMMIT удаляем из Redis
+                # Удаляем из Redis только после успешного сохранения
                 await redis_manager.delete_buffer(conversation_id)
+            
             else:
                 logger.debug("Буфер Redis пуст, продолжаем работу с историей из БД.")
             # 5. Генерация ответа
@@ -239,6 +275,14 @@ async def process_pact_messages_task(conversation_id: str):
             await session.rollback()
             logger.error(f"🚨 Ошибка воркера [ID: {conversation_id}]: {str(e)}", exc_info=True)
             # Пробрасываем ошибку для TaskIQ Retry
+            # --- ТВОЙ АЛЕРТ ПРИ КРАШЕ ВОРКЕРА ---
+            # Отправляем уведомление админу, что задача полностью упала
+            alert_msg = (
+                f"❌ <b>Критическая ошибка воркера!</b>\n"
+                f"Диалог: <code>{conversation_id}</code>\n"
+                f"Ошибка: <code>{str(e)}</code>"
+            )
+            asyncio.create_task(tg_service.send_tech_alert(alert_msg))
             raise e
 
 async def perform_logic_and_reply(dialogue: Dialogue, session):
@@ -255,6 +299,7 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
 
     # 2. Формируем входное состояние для графа
     # Если шаг еще не задан (новое сообщение), начинаем с CONSENT
+    old_state = dialogue.current_state # <--- ЗАПОМИНАЕМ СТАРЫЙ СТЕЙТ
     current_step = dialogue.current_state if dialogue.current_state != "START" else Steps.CONSENT
     
     initial_state: DialogueState = {
@@ -277,7 +322,11 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
         ai_reply_text = final_state.get("ai_response")
         
         if not ai_reply_text:
-            logger.error("⚠️ Граф не сгенерировал ответ (ai_response is None)")
+            error_msg = f"⚠️ Граф не сгенерировал ответ для {dialogue.pact_conversation_id} (ai_response is None)"
+            logger.error(error_msg)
+            
+            # --- АЛЕРТ: ИИ ПРОМОЛЧАЛ ---
+            asyncio.create_task(tg_service.send_tech_alert(f"🤖 <b>ИИ не выдал ответ!</b>\nДиалог: {dialogue.pact_conversation_id}"))
             return
 
         # 4. Отправка ответа пользователю через Pact API
@@ -287,11 +336,19 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
         )
 
         if success:
-            # 5. Обновляем модель Dialogue данными из графа
+            # Делаем срез данных, чтобы они не изменились по ссылке
+            current_extracted = dict(final_state["extracted_data"])
+            new_state = final_state["current_step"]
+
+            # 5. Обновляем модель Dialogue новыми богатыми данными
             new_entry = {
                 "role": "assistant",
+                "state": old_state,                 # В каком стейте пришло сообщение
+                "new_state": new_state,             # В какой стейт перешли
                 "content": ai_reply_text,
-                "timestamp": asyncio.get_event_loop().time()
+                "message_id": f"bot_{time.time()}", # Генерируем ID для бота
+                "timestamp_msk": get_msk_time(),    # Время МСК
+                "extracted_data": current_extracted # Срез извлеченных данных
             }
             
             # Обновляем историю
@@ -300,8 +357,8 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
             dialogue.history = updated_history
             
             # Обновляем стейт и извлеченные данные
-            dialogue.current_state = final_state["current_step"]
-            dialogue.extracted_data = final_state["extracted_data"]
+            dialogue.current_state = new_state
+            dialogue.extracted_data = current_extracted
             
             # 6. ЛОГИКА CRM (Перевод сделки в другую воронку, если диалог завершен)
             if final_state.get("is_completed"):
@@ -310,10 +367,21 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
 
             logger.info(f"📤 Ответ отправлен. Шаг изменен на: {dialogue.current_state}")
         else:
+            error_text = f"❌ <b>Ошибка отправки в Pact!</b>\nДиалог: {dialogue.pact_conversation_id}\nТекст: {ai_reply_text[:100]}..."
+            asyncio.create_task(tg_service.send_tech_alert(error_text))
+            
             logger.error(f"❌ Не удалось отправить ответ в Пакт")
             raise Exception("Pact send failed")
 
     except Exception as e:
+        # --- АЛЕРТ: ОШИБКА ВНУТРИ ГРАФА ИЛИ OPENAI ---
+        alert_msg = (
+            f"🚨 <b>Ошибка в логике ИИ!</b>\n"
+            f"Диалог: <code>{dialogue.pact_conversation_id}</code>\n"
+            f"Детали: <code>{str(e)}</code>"
+        )
+        asyncio.create_task(tg_service.send_tech_alert(alert_msg))
+        
         logger.error(f"🚨 Ошибка при выполнении графа: {e}", exc_info=True)
         raise e
 

@@ -11,6 +11,8 @@ class AppSettings(Base):
     
     id: Mapped[int] = mapped_column(primary_key=True)
     balance: Mapped[float] = mapped_column(Numeric(12, 2), default=0.00)
+    low_balance_threshold: Mapped[float] = mapped_column(Numeric(12, 2), default=100.00)
+    is_low_balance_alert_sent: Mapped[bool] = mapped_column(default=False)
     tariffs: Mapped[dict] = mapped_column(JSONB, server_default='{}')
     stats: Mapped[dict] = mapped_column(JSONB, server_default='{}')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -56,7 +58,7 @@ class Dialogue(Base):
     # Статистика и метаданные
     usage_stats: Mapped[dict] = mapped_column(JSONB, server_default='{"tokens": 0, "cost": 0}')
     is_active: Mapped[bool] = mapped_column(default=True)
-    
+    reminder_level: Mapped[int] = mapped_column(default=0)
     # Временные метки
     last_message_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

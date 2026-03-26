@@ -18,3 +18,4 @@ langgraph
 langchain-core
 pyyaml
 typing-extensions
+aiohttp-socks
