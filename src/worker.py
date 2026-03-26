@@ -11,6 +11,7 @@ from src.db.models import Dialogue, AppSettings, Account
 from src.services.pact.pact_api import pact_api # Будет реализован следующим шагом
 from src.core.redis_client import scheduler
 from decimal import Decimal
+from src.core.logging import setup_logging, logger
 from src.logic.graph import app_graph
 from src.logic.states import Steps, DialogueState
 # Также нам понадобятся настройки для логики CRM
@@ -47,7 +48,7 @@ ogger = setup_logging("worker")
 async def worker_startup(state):
     """Инициализация ресурсов при старте воркера"""
     # ПЕРЕИНИЦИАЛИЗИРУЕМ ЛОГИ ДЛЯ КАЖДОГО ПРОЦЕССА ВОРКЕРА
-    setup_logging("worker") 
+    # setup_logging("worker") 
     logger.info("👷 Worker process starting up...")
     await redis_manager.connect()
 

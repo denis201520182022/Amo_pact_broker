@@ -7,8 +7,7 @@ from src.core.config import settings
 LOGS_DIR = os.path.join(os.getcwd(), "logs")
 
 class CustomFormatter(logging.Formatter):
-    # Добавили [%(process)d], чтобы отличать процессы воркера
-    fmt = "%(asctime)s | %(levelname)-8s | [%(process)d] %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
     def format(self, record):
         return super().format(record)
 
@@ -20,25 +19,23 @@ def setup_logging(service_name: str):
 
     log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     
-    # 1. Настройка корневого логгера
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     
-    # Очищаем все хендлеры у корня
-    root_logger.handlers = []
+    # Консоль добавляем только если её еще нет
+    if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
+        root_logger.addHandler(console_handler)
 
-    # Консоль
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(CustomFormatter(CustomFormatter.fmt))
-    root_logger.addHandler(console_handler)
-
-    # 2. Настройка логгера проекта ("src")
     project_logger = logging.getLogger("src")
     project_logger.setLevel(log_level)
-    
-    # КРИТИЧЕСКИ ВАЖНО: Удаляем ВСЕ хендлеры, которые могли быть добавлены при импортах
-    project_logger.handlers = [] 
     project_logger.propagate = True 
+
+    # Удаляем старые ФАЙЛОВЫЕ хендлеры, чтобы не было дублей (api + worker)
+    for h in project_logger.handlers[:]:
+        if isinstance(h, RotatingFileHandler):
+            project_logger.removeHandler(h)
 
     # Добавляем файл
     file_path = os.path.join(LOGS_DIR, f"{service_name}.log")
@@ -60,5 +57,5 @@ def setup_logging(service_name: str):
 
     return project_logger
 
-# Экспортируем логгер
+# Создаем базовый объект для импортов
 logger = logging.getLogger("src")
