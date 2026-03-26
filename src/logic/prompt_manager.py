@@ -22,7 +22,7 @@ class PromptManager:
         self.config_path = os.path.join("config", "prompts.yaml")
         self.prompts = self._load_prompts()
         
-        # Маппинг шагов на Pydantic схемы
+        # Маппинг шагов на Pydantic схемы для Анализатора (AI-1)
         self._schema_map: Dict[str, Type[BaseModel]] = {
             Steps.CONSENT: ConsentSchema,
             Steps.NAME: UserBasicInfoSchema,
@@ -31,27 +31,35 @@ class PromptManager:
             Steps.MAIN_MENU: MenuSelectionSchema,
             Steps.CONSULT_INFO: ConsultationConsentSchema,
             
-            # Все стоп-факторы используют одну схему
+            # Все стоп-факторы используют одну схему (теперь с полем is_active)
             Steps.SF_SENIORITY: StopFactorCheckSchema,
             Steps.SF_DELAYS: StopFactorCheckSchema,
             Steps.SF_FSSP: StopFactorCheckSchema,
             Steps.SF_MFO: StopFactorCheckSchema,
             Steps.SF_BANKRUPTCY: StopFactorCheckSchema,
             
+            # Квалификация (предложение залога при стоп-факторах)
+            # Используем CollateralDetailsSchema, так как там есть флаг no_collateral
+            Steps.QUALIFY_RESULT: CollateralDetailsSchema,
+            
             Steps.SELECT_CREDIT_TYPE: CreditTypeSelectionSchema,
+            
+            # Детали конкретных веток
             Steps.COLLATERAL_DETAILS: CollateralDetailsSchema,
             Steps.MORTGAGE_DETAILS: MortgageDetailsSchema,
             Steps.CAR_DETAILS: CarLoanDetailsSchema,
             Steps.REFINANCE_DETAILS: GeneralCreditDetailsSchema,
             Steps.CONSUMER_DETAILS: GeneralCreditDetailsSchema,
-            Steps.DOCS_WAIT: DocumentWaitSchema,
+            
+            # Документы
+            Steps.DOCS_INSTRUCTION: DocumentWaitSchema, # Чтобы поймать "Готов/Да"
+            Steps.DOCS_WAIT: DocumentWaitSchema,        # Чтобы поймать комментарии "скину позже"
         }
 
     def _load_prompts(self) -> Dict[str, Any]:
         """Загрузка YAML конфигурации"""
         if not os.path.exists(self.config_path):
-            # Фоллбек, если файл забыли создать
-            return {"steps": {}, "analyzer_system": "", "generator": {}}
+            return {"steps": {}, "analyzer_system": "", "generator_system": ""}
             
         with open(self.config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
@@ -60,7 +68,8 @@ class PromptManager:
         """
         Возвращает схему и инструкцию для Анализатора (AI-1)
         """
-        schema = self._schema_map.get(step_id, BaseModel) # По умолчанию пустая схема
+        # Получаем схему из маппинга. Если шага нет в маппинге — пустая базовая схема.
+        schema = self._schema_map.get(step_id, BaseModel)
         
         # Получаем инструкцию из YAML
         step_config = self.prompts.get("steps", {}).get(step_id, {})
@@ -69,9 +78,12 @@ class PromptManager:
         return schema, instruction
 
     def get_system_prompts(self) -> Tuple[str, str]:
-        """Возвращает системные промпты для Анализатора и Генератора"""
+        """
+        Возвращает системные промпты для Анализатора и Генератора.
+        Соответствует ключам в prompts.yaml
+        """
         analyzer_sys = self.prompts.get("analyzer_system", "")
-        generator_sys = self.prompts.get("generator", {}).get("system_prompt", "")
+        generator_sys = self.prompts.get("generator_system", "") # Исправлен ключ
         return analyzer_sys, generator_sys
 
     def get_generator_instruction(self, step_id: str) -> str:

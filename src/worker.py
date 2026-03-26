@@ -395,30 +395,21 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
         logger.warning(f"⚠️ Нет amo_lead_id для диалога {dialogue.pact_conversation_id}. Пропускаем CRM-логику.")
         return
 
-    data = final_state.get('extracted_data', {})
-    current_step = final_state.get('current_step')
+    # 1. Берем решение прямо из ИИ-логики
+    dest = final_state.get('final_destination') 
     
-    # 1. ОПРЕДЕЛЯЕМ ЦЕЛЕВУЮ ВОРОНКУ
+    # 2. Маппим ключ из графа на ID воронки из настроек
+    pipelines = SETTINGS_DATA.get('amocrm_pipelines', {})
     target_pipeline = None
-    
-    if current_step == Steps.COURSE_INFO:
-        target_pipeline = SETTINGS_DATA['amocrm_pipelines']['course_id']
-        logger.info(f"🎯 Направление: КУРС. Перевод сделки {lead_id}...")
 
-    elif current_step == Steps.CONSULT_INFO:
-        # Проверяем, согласился ли на оплату (из анализатора)
-        analysis = final_state.get('analysis_result', {})
-        if analysis.get('agree_to_pay'):
-            target_pipeline = SETTINGS_DATA['amocrm_pipelines']['consultation_id']
-            logger.info(f"🎯 Направление: КОНСУЛЬТАЦИЯ (оплачено). Перевод сделки {lead_id}...")
+    if dest == "course": 
+        target_pipeline = pipelines.get('course_id')
+    elif dest == "consultation": 
+        target_pipeline = pipelines.get('consultation_id')
 
-    elif current_step == Steps.FINAL_HANDOVER:
-        target_pipeline = SETTINGS_DATA['amocrm_pipelines']['main_id']
-        logger.info(f"🎯 Направление: ОСНОВНОЙ КРЕДИТ. Перевод сделки {lead_id}...")
-
-    # 2. ПЕРЕВОДИМ СДЕЛКУ
     if target_pipeline:
         await amo_api.update_lead(lead_id=lead_id, pipeline_id=target_pipeline)
+        logger.info(f"🎯 Сделка {lead_id} переведена в воронку ID: {target_pipeline}")
 
     # 3. ФОРМИРУЕМ ИТОГОВУЮ АНКЕТУ (для основного сценария и консультаций)
     if current_step in [Steps.FINAL_HANDOVER, Steps.CONSULT_INFO]:

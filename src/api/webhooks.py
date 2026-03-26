@@ -13,10 +13,16 @@ async def delayed_trigger(conversation_id: str):
     """
     Фоновый таймер: спит 10 секунд и пинает воркер
     """
-    await asyncio.sleep(settings.DEBOUNCE_SECONDS)
-    # Запускаем задачу воркера ОБЫЧНЫМ способом (мгновенно)
-    await process_pact_messages_task.kiq(conversation_id)
-    logger.info(f"🚀 [Debounce] 10 секунд прошло. Задача для {conversation_id} отправлена воркеру.")
+    try:
+        await asyncio.sleep(settings.DEBOUNCE_SECONDS)
+        # Запускаем задачу воркера
+        await process_pact_messages_task.kiq(conversation_id)
+        logger.info(f"🚀 [Debounce] Задача для {conversation_id} отправлена воркеру.")
+    finally:
+        # В ЛЮБОМ СЛУЧАЕ удаляем флаг активности таймера, 
+        # чтобы следующее сообщение снова могло запустить цикл
+        lock_key = f"timer_active:{conversation_id}"
+        await redis_manager.redis.delete(lock_key)
 
 
 @router.post("/pact")
@@ -84,18 +90,29 @@ async def pact_webhook(request: Request):
             logger.info(f"🔗 [Match] Связь найдена мгновенно: Pact {conversation_id} <-> Amo {amo_lead_id}")
         # ---------------------------------------
 
-        # 3. Дебоунс логика через Redis
-        # add_message_to_buffer должен возвращать True, если это ПЕРВОЕ сообщение в пачке за 10 сек
-        is_first = await redis_manager.add_message_to_buffer(conversation_id, payload)
+        # --- ОБНОВЛЕННАЯ ЛОГИКА ДЕБОУНСА ---
+        
+        # Сначала всегда сохраняем сообщение в буфер
+        await redis_manager.add_message_to_buffer(conversation_id, payload)
 
-        if is_first:
-            # ЗАПУСКАЕМ ТАЙМЕР "В СТОРОНЕ" (не дожидаясь его завершения)
+        # Проверяем, запущен ли уже таймер для этого диалога
+        lock_key = f"timer_active:{conversation_id}"
+        
+        # Пытаемся установить "замок" в Redis
+        # nx=True значит "установить только если ключа нет"
+        # ex=settings.DEBOUNCE_SECONDS + 30 — страховочный TTL (если инстанс упадет, замок сам снимется)
+        timer_started = await redis_manager.redis.set(
+            lock_key, "1", nx=True, ex=settings.DEBOUNCE_SECONDS + 30
+        )
+
+        if timer_started:
+            # Если мы успешно поставили ключ, значит мы первые и должны запустить таймер
             asyncio.create_task(delayed_trigger(conversation_id))
-            logger.info(f"📥 [Pact] Первое сообщение. Таймер на {settings.DEBOUNCE_SECONDS}с запущен.")
+            logger.info(f"📥 [Pact] Таймер запущен для {conversation_id}")
         else:
-            logger.info(f"📥 [Pact] Сообщение добавлено в буфер диалога {conversation_id}")
+            # Если ключ уже есть, значит таймер уже тикает, просто логируем
+            logger.info(f"📥 [Pact] Сообщение в буфер {conversation_id} (таймер уже работает)")
 
-        # ПАКТ ПОЛУЧАЕТ ОТВЕТ МГНОВЕННО
         return {"status": "accepted"}
 
     except json.JSONDecodeError:

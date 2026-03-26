@@ -8,13 +8,13 @@ from src.logic.states import DialogueState, Steps
 from src.logic.prompt_manager import prompt_manager
 from src.services.openai.openai_api import openai_service
 from src.core.logging import logger
-from src.utils.dialogue_logger import DialogueLogger  # Наш новый утилитарный логгер
+from src.utils.dialogue_logger import DialogueLogger
 
 # --- ЗАГРУЗКА НАСТРОЕК ДЛЯ ПОДСТАНОВКИ В ПРОМПТЫ ---
 def load_settings_data() -> Dict[str, Any]:
     path = os.path.join("config", "settings.yaml")
     if not os.path.exists(path):
-        return {"links": {}, "pricing": {}, "amocrm_pipelines": {}}
+        return {"links": {}, "pricing": {}, "amocrm_pipelines": {}, "limits": {}}
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -22,18 +22,37 @@ SETTINGS_DATA = load_settings_data()
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
-def format_instruction(text: str) -> str:
-    """Подставляет ссылки и цены из settings.yaml в текст промпта"""
+def format_instruction(text: str, state_data: Dict[str, Any] = None) -> str:
+    """
+    Подставляет ссылки, цены и динамические данные из состояния в текст промпта.
+    """
+    state_data = state_data or {}
+    
+    # Подготовка списка стоп-факторов для вставки в текст (если они есть)
+    found_factors = state_data.get('found_factors', [])
+    factors_str = ", ".join(found_factors) if found_factors else "не указаны"
+
     try:
         return text.format(
+            # Ссылки из settings.yaml
             pd_link=SETTINGS_DATA.get('links', {}).get('privacy_policy', ''),
             course_link=SETTINGS_DATA.get('links', {}).get('author_course', ''),
             tg_link=SETTINGS_DATA.get('links', {}).get('telegram_work_chat', ''),
+            # Визитка (берем из ссылок или отдельного поля, если есть)
+            vizitka=SETTINGS_DATA.get('links', {}).get('vizitka_text', ''), 
+            
+            # Ссылки БКИ
             bki_links=f"{SETTINGS_DATA.get('links', {}).get('bki_scoring', '')}, "
                       f"{SETTINGS_DATA.get('links', {}).get('bki_credistory', '')}, "
                       f"{SETTINGS_DATA.get('links', {}).get('bki_nbki', '')}",
+            
+            # Цены и лимиты
             paid_consult_price=SETTINGS_DATA.get('pricing', {}).get('paid_consultation', 10000),
-            files_count="{files_count}"  # Оставляем для динамической подстановки в узле генерации
+            max_loan=SETTINGS_DATA.get('limits', {}).get('max_consumer_loan_amount', 1500000),
+            
+            # Динамические данные из состояния
+            found_factors=factors_str,
+            files_count="{files_count}"  # Оставляем для финальной подстановки в узле генерации
         )
     except Exception as e:
         logger.error(f"Ошибка форматирования инструкции: {e}")
@@ -48,20 +67,20 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
     
     logger.info(f"🔍 [Node: Analyze] Step: {state['current_step']}")
     
-    # 1. Получаем конфигурацию для анализатора
+    # 1. Получаем конфигурацию для анализатора (схему и инструкцию)
     schema, instruction = prompt_manager.get_analyzer_config(state['current_step'])
     analyzer_sys, _ = prompt_manager.get_system_prompts()
     
-    # ЛОГИРУЕМ ЗАПРОС К АНАЛИЗАТОРУ
+    # ЛОГИРУЕМ ЗАПРОС К АНАЛИЗАТОРУ (AI-1)
     d_logger.log_section("AI-1 ANALYZER REQUEST", {
         "current_step": state['current_step'],
         "system_prompt": analyzer_sys,
         "step_instruction": instruction,
         "expected_pydantic_schema": schema.schema(),
-        "history_context_sent": state['messages'][-3:] # Последние 3 для понимания контекста
+        "history_context_sent": state['messages'][-3:] # Контекста из 3 сообщений достаточно для анализа хода
     })
 
-    # 2. Вызов OpenAI
+    # 2. Вызов OpenAI с поддержкой Structured Outputs
     analysis = await openai_service.analyze_message(
         messages=state['messages'][-3:], 
         response_model=schema,
@@ -69,7 +88,12 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
         instruction=instruction
     )
     
-    analysis_dict = analysis.model_dump() if analysis else {"step_completed": False, "error": "OpenAI returned None"}
+    # Преобразуем Pydantic модель в словарь для LangGraph
+    analysis_dict = analysis.model_dump() if analysis else {
+        "step_completed": False, 
+        "off_topic": True,
+        "error": "OpenAI returned None"
+    }
     
     # ЛОГИРУЕМ ОТВЕТ АНАЛИЗАТОРА
     d_logger.log_section("AI-1 ANALYZER RESPONSE", analysis_dict)
@@ -78,41 +102,52 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
 
 
 async def logic_node(state: DialogueState) -> Dict[str, Any]:
-    """Узел 2: Бизнес-логика, переключение стейтов и управление extracted_data"""
+    """
+    Узел 2: Бизнес-логика. 
+    Принимает результат анализа (AI-1), обновляет состояние, меняет шаги (current_step) 
+    и управляет флагами завершения.
+    """
     conv_id = state['pact_conversation_id']
     d_logger = DialogueLogger(conv_id)
     
-    logger.info(f"⚙️ [Node: Logic] Processing analysis for step: {state['current_step']}")
+    logger.info(f"⚙️ [Node: Logic] Processing logic for: {state['current_step']}")
     
-    # Сохраняем состояние "ДО" для логов
+    # Сохраняем состояние "ДО" для детального логгирования
     old_step = state['current_step']
-    old_data = json.loads(json.dumps(state['extracted_data'])) # Глубокая копия для лога
+    old_data = json.loads(json.dumps(state['extracted_data']))
 
     result = state.get('analysis_result') or {}
     current = state['current_step']
-    extracted = dict(state['extracted_data']) # Поверхностная копия для мутации
+    extracted = dict(state['extracted_data']) # Работаем с копией данных
     
     next_step = current 
     is_completed = False
     stop_factors_found = state.get('stop_factors_found', False)
+    final_destination = state.get('final_destination')
     
-    # Считаем файлы
+    # Считаем файлы в реальном времени
     received_files = extracted.get('received_files', [])
     files_count = len(received_files)
 
-    # --- ПРОВЕРКА СЧЕТЧИКА ФАЙЛОВ (ПРИОРИТЕТНАЯ ЛОГИКА) ---
+    # --- ПРИОРИТЕТ 1: ПРОВЕРКА СЧЕТЧИКА ФАЙЛОВ ---
+    # Если файлов 3 или более, мгновенно переходим к финалу, игнорируя остальную логику
     if files_count >= 3:
-        logger.info(f"📚 Собрано {files_count} файла. Переход к финалу.")
+        logger.info(f"📚 Собрано {files_count} файла. Переход к завершению.")
         next_step = Steps.FINAL_HANDOVER
+        final_destination = "main" # Основная воронка (Кредиты)
         is_completed = True
-    
-    # --- ОБРАБОТКА ЛОГИКИ ПЕРЕХОДОВ ---
+
+    # --- ПРИОРИТЕТ 2: ОБРАБОТКА ВАЛИДНОГО ОТВЕТА (step_completed: true) ---
     elif result.get('step_completed'):
         
-        # 1. Базовый сбор: Согласие -> Имя -> Телефон -> Город
+        # 1. Сбор базовых данных (Анкета)
         if current == Steps.CONSENT:
-            extracted['consent_given'] = result.get('consent_given')
-            next_step = Steps.NAME if extracted['consent_given'] else Steps.CONSENT
+            if result.get('consent_given'):
+                extracted['consent_given'] = True
+                next_step = Steps.NAME
+            else:
+                # Если нет согласия — остаемся на этом же шаге, AI-2 снова попросит согласие
+                next_step = Steps.CONSENT
 
         elif current == Steps.NAME:
             extracted['name'] = result.get('name')
@@ -131,12 +166,18 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
             intent = result.get('intent')
             extracted['direction'] = intent
             
-            if intent == "course": next_step = Steps.COURSE_INFO
-            elif intent == "consult": next_step = Steps.CONSULT_INFO
-            elif intent == "pricing": next_step = Steps.PRICING_INFO
-            elif intent == "credit": next_step = Steps.SF_SENIORITY
+            if intent == "course": 
+                next_step = Steps.COURSE_INFO
+                final_destination = "course"
+            elif intent == "consult": 
+                next_step = Steps.CONSULT_INFO
+                final_destination = "consultation"
+            elif intent == "pricing": 
+                next_step = Steps.PRICING_INFO
+            elif intent == "credit": 
+                next_step = Steps.SF_SENIORITY
 
-        # 3. Инфо-ветки
+        # 3. Инфо-ветки и Консультации
         elif current == Steps.COURSE_INFO:
             is_completed = True
 
@@ -145,20 +186,30 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
                 extracted['paid_consult_agreed'] = True
                 next_step = Steps.DOCS_INSTRUCTION
             else:
+                # Отказ от оплаты -> возврат в меню
                 next_step = Steps.MAIN_MENU
 
         elif current == Steps.PRICING_INFO:
+            # После цен возвращаемся в меню по сценарию
             next_step = Steps.MAIN_MENU
 
-        # 4. Цепочка СТОП-ФАКТОРОВ
+        # 4. Цепочка СТОП-ФАКТОРОВ (SF)
         elif current.startswith("STEP_SF_"):
             factor_key = current.replace("STEP_SF_", "").lower()
+            
             if result.get('is_problematic'):
                 stop_factors_found = True
                 current_factors = extracted.get('found_factors', [])
-                if factor_key not in current_factors:
-                    extracted['found_factors'] = current_factors + [factor_key]
+                
+                # Формируем красивое название фактора для анкеты
+                label = factor_key
+                if result.get('is_active'): # Если просрочка/МФО действующая
+                    label = f"действующая {factor_key}"
+                
+                if label not in current_factors:
+                    extracted['found_factors'] = current_factors + [label]
             
+            # Навигация по цепочке вопросов
             sf_chain = [
                 Steps.SF_SENIORITY, Steps.SF_DELAYS, Steps.SF_FSSP, 
                 Steps.SF_MFO, Steps.SF_BANKRUPTCY
@@ -168,25 +219,26 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
                 if curr_idx < len(sf_chain) - 1:
                     next_step = sf_chain[curr_idx + 1]
                 else:
-                    next_step = Steps.QUALIFY_RESULT
+                    # Конец цепочки СФ -> Проверяем, нужна ли квалификация на залог
+                    next_step = Steps.QUALIFY_RESULT if stop_factors_found else Steps.SELECT_CREDIT_TYPE
             except ValueError:
-                next_step = Steps.QUALIFY_RESULT
-
-        # 5. Квалификация (Залог vs Кредит)
-        elif current == Steps.QUALIFY_RESULT:
-            if stop_factors_found:
-                if result.get('step_completed'):
-                    extracted['credit_type'] = "collateral"
-                    next_step = Steps.COLLATERAL_DETAILS
-                else:
-                    is_completed = True
-            else:
                 next_step = Steps.SELECT_CREDIT_TYPE
 
-        # 6. Выбор типа кредита
+        # 5. Квалификация (Предложение залога при проблемах)
+        elif current == Steps.QUALIFY_RESULT:
+            if result.get('no_collateral'):
+                # Пользователь отказался от залога -> Конец (Генератор выдаст Визитку)
+                is_completed = True
+            else:
+                # Согласен на залог -> Принудительно ставим тип "collateral" и идем в детали
+                extracted['credit_type'] = "collateral"
+                next_step = Steps.COLLATERAL_DETAILS
+
+        # 6. Выбор типа кредита (для "чистых" клиентов)
         elif current == Steps.SELECT_CREDIT_TYPE:
             c_type = result.get('credit_type')
             extracted['credit_type'] = c_type
+            
             mapping = {
                 "mortgage": Steps.MORTGAGE_DETAILS,
                 "collateral": Steps.COLLATERAL_DETAILS,
@@ -196,25 +248,49 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
             }
             next_step = mapping.get(c_type, Steps.DOCS_INSTRUCTION)
 
-        # 7. Детали веток
-        elif current in [
-            Steps.MORTGAGE_DETAILS, Steps.COLLATERAL_DETAILS, 
-            Steps.CAR_DETAILS, Steps.REFINANCE_DETAILS, Steps.CONSUMER_DETAILS
-        ]:
-            for key, val in result.items():
-                if key not in ['step_completed', 'off_topic']:
-                    extracted[key] = val
+        # 7. Детализация веток (Специфическая логика)
+        
+        elif current == Steps.MORTGAGE_DETAILS:
+            # Сценарий: Если рефинансирование ипотеки -> идем в БЛОК РЕФИНАНСИРОВАНИЕ
+            if result.get('mortgage_type') == "refinance":
+                next_step = Steps.REFINANCE_DETAILS
+            else:
+                next_step = Steps.DOCS_INSTRUCTION
+            # Сохраняем все извлеченные данные (категория, рынок и т.д.)
+            for k, v in result.items():
+                if k not in ['step_completed', 'off_topic']: extracted[k] = v
+
+        elif current == Steps.COLLATERAL_DETAILS:
+            if result.get('no_collateral'):
+                is_completed = True
+            else:
+                next_step = Steps.DOCS_INSTRUCTION
+            for k, v in result.items():
+                if k not in ['step_completed', 'off_topic']: extracted[k] = v
+
+        elif current in [Steps.CAR_DETAILS, Steps.REFINANCE_DETAILS, Steps.CONSUMER_DETAILS]:
+            # Универсальный переход к документам для остальных веток
+            for k, v in result.items():
+                if k not in ['step_completed', 'off_topic']: extracted[k] = v
             next_step = Steps.DOCS_INSTRUCTION
 
         # 8. Документы
         elif current == Steps.DOCS_INSTRUCTION:
+            # Пользователь подтвердил готовность прислать документы
             next_step = Steps.DOCS_WAIT
 
-    # Проверка завершения для финальных узлов
+    # --- ПРИОРИТЕТ 3: ОБРАБОТКА OFF-TOPIC ИЛИ НЕВАЛИДНОГО ОТВЕТА ---
+    else:
+        # Если Анализатор не понял ответ (step_completed: false), 
+        # мы остаемся на текущем шаге. Генератор (AI-2) увидит это и повторит вопрос.
+        logger.warning(f"⚠️ Ответ не распознан на шаге {current}. Повтор вопроса.")
+        next_step = current
+
+    # Финальная проверка завершения (для CRM)
     if next_step in [Steps.COURSE_INFO, Steps.FINAL_HANDOVER]:
         is_completed = True
 
-    # ЛОГИРУЕМ ПЕРЕХОД И ИЗМЕНЕНИЯ В ДАННЫХ
+    # Логируем изменения
     d_logger.log_state_change(
         old_step=old_step,
         new_step=next_step,
@@ -227,42 +303,70 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
         "current_step": next_step,
         "is_completed": is_completed,
         "stop_factors_found": stop_factors_found,
-        "files_count": files_count
+        "files_count": files_count,
+        "final_destination": final_destination
     }
 
-
 async def generate_node(state: DialogueState) -> Dict[str, Any]:
-    """Узел 3: Генерация текстового ответа через AI-2"""
+    """
+    Узел 3: Генерация текстового ответа через AI-2 (Татьяна).
+    Использует текущий шаг (current_step), установленный в logic_node, 
+    чтобы выбрать нужную инструкцию и сформировать ответ.
+    """
     conv_id = state['pact_conversation_id']
     d_logger = DialogueLogger(conv_id)
     
-    logger.info(f"✍️ [Node: Generate] Writing reply for {state['current_step']}")
+    logger.info(f"✍️ [Node: Generate] Writing reply for step: {state['current_step']}")
     
-    # 1. Сбор промптов
+    # 1. Получаем системный промпт и специфическую инструкцию шага
     _, generator_sys = prompt_manager.get_system_prompts()
-    instruction = prompt_manager.get_generator_instruction(state['current_step'])
+    base_instruction = prompt_manager.get_generator_instruction(state['current_step'])
     
-    # 2. Форматирование промпта
-    formatted_instruction = format_instruction(instruction).replace(
+    # 2. Проверяем, был ли ответ пользователя невалидным (off-topic)
+    # Если да — добавляем Генератору указание проявить настойчивость
+    analysis = state.get('analysis_result') or {}
+    off_topic_hint = ""
+    if not analysis.get('step_completed') or analysis.get('off_topic'):
+        off_topic_hint = (
+            "\nВАЖНО: Пользователь не дал четкого ответа или ушел от темы. "
+            "Выполни ПРАВИЛО №3 из системного промпта: проигнорируй уход от темы "
+            "и настойчиво, но вежливо повтори свой вопрос."
+        )
+
+    # 3. Форматируем инструкцию (подставляем ссылки, цены, список СТОП-ФАКТОРОВ)
+    # Передаем extracted_data, чтобы сработал плейсхолдер {found_factors}
+    formatted_instruction = format_instruction(base_instruction, state['extracted_data'])
+    
+    # Подставляем счетчик файлов отдельно (так как он может меняться часто)
+    final_extra_instruction = formatted_instruction.replace(
         "{files_count}", str(state.get('files_count', 0))
     )
     
-    # ЛОГИРУЕМ ЗАПРОС К ГЕНЕРАТОРУ
+    # Добавляем подсказку про off-topic к основной инструкции
+    final_extra_instruction += off_topic_hint
+    
+    # ЛОГИРУЕМ ЗАПРОС К ГЕНЕРАТОРУ (AI-2)
     d_logger.log_section("AI-2 GENERATOR REQUEST", {
         "target_step": state['current_step'],
-        "system_prompt": generator_sys,
-        "formatted_extra_instruction": formatted_instruction,
-        "history_sent": state['messages'][-5:]
+        "system_prompt_preview": generator_sys[:200] + "...",
+        "formatted_instruction": final_extra_instruction,
+        "history_limit": 5,
+        "current_files": state.get('files_count', 0)
     })
     
-    # 3. Генерация
+    # 4. Генерация ответа через OpenAI
+    # Берем последние 5 сообщений для сохранения контекста беседы
     ai_text = await openai_service.generate_response(
         messages=state['messages'][-5:], 
         system_prompt=generator_sys,
-        extra_instruction=formatted_instruction
+        extra_instruction=final_extra_instruction
     )
     
-    # ЛОГИРУЕМ ИТОГОВЫЙ ТЕКСТ
+    if not ai_text:
+        ai_text = "Прошу прощения, возникла техническая заминка. Повторите, пожалуйста, ваш последний ответ."
+        logger.error(f"❌ OpenAI AI-2 returned empty text for {conv_id}")
+
+    # ЛОГИРУЕМ ИТОГОВЫЙ ТЕКСТ, КОТОРЫЙ УЙДЕТ КЛИЕНТУ
     d_logger.log_section("AI-2 GENERATOR RESPONSE (FINAL TEXT)", ai_text)
     
     return {"ai_response": ai_text}
@@ -270,18 +374,27 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
 # --- СБОРКА ГРАФА ---
 
 def create_graph():
+    """
+    Создает и компилирует StateGraph.
+    Цикл работы: Анализ (AI-1) -> Бизнес-логика -> Генерация текста (AI-2).
+    """
     workflow = StateGraph(DialogueState)
 
+    # Добавляем узлы
     workflow.add_node("analyze", analyze_node)
     workflow.add_node("logic", logic_node)
     workflow.add_node("generate", generate_node)
 
+    # Устанавливаем точку входа
     workflow.set_entry_point("analyze")
 
+    # Устанавливаем связи (линейная цепочка)
     workflow.add_edge("analyze", "logic")
     workflow.add_edge("logic", "generate")
     workflow.add_edge("generate", END)
 
+    # Компилируем граф
     return workflow.compile()
 
+# Экспортируем готовый объект графа для использования в воркере
 app_graph = create_graph()

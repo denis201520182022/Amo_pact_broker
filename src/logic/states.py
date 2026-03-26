@@ -42,7 +42,7 @@ class DialogueState(TypedDict):
 class BaseAnalysis(BaseModel):
     """Базовые поля для любого ответа анализатора"""
     step_completed: bool = Field(
-        description="Удалось ли получить валидную информацию для текущего шага"
+        description="true, только если получен однозначный валидный ответ на вопрос. Если пользователь сомневается, задает встречный вопрос или ответ неполный — false."
     )
     off_topic: bool = Field(
         description="Пользователь явно игнорирует вопрос или пытается сменить тему на постороннюю"
@@ -77,6 +77,9 @@ class StopFactorCheckSchema(BaseAnalysis):
     is_problematic: bool = Field(
         description="Является ли ответ негативным (стоп-фактором) для получения обычного кредита"
     )
+    is_active: Optional[bool] = Field(
+        None, description="Является ли проблема действующей на текущий момент (например, просрочка прямо сейчас, а не в прошлом)"
+    )
 
 class CreditTypeSelectionSchema(BaseAnalysis):
     """Этап 5: Выбор типа кредита"""
@@ -89,9 +92,15 @@ class CollateralDetailsSchema(BaseAnalysis):
     sub_type: Optional[Literal["pledge", "repledge"]] = Field(None, description="Залог или Перезалог")
     is_sole_owner: Optional[bool] = Field(None, description="Является ли единственным собственником")
     has_minors: Optional[bool] = Field(None, description="Есть ли среди собственников несовершеннолетние")
+    no_collateral: bool = Field(
+        False, description="Пользователь прямо заявил, что у него НЕТ объекта залога или он отказывается его предоставлять"
+    )
 
 class MortgageDetailsSchema(BaseAnalysis):
     """Блок: Ипотека"""
+    mortgage_type: Optional[Literal["new", "refinance"]] = Field(
+        None, description="Тип: Оформление новой ипотеки или Рефинансирование существующей"
+    )
     category: Optional[Literal["apartment", "house", "commercial"]] = Field(None, description="Тип недвижимости")
     market: Optional[Literal["primary", "secondary"]] = Field(None, description="Рынок: первичка или вторичка")
     has_down_payment: Optional[bool] = Field(None, description="Наличие первоначального взноса")
@@ -109,13 +118,15 @@ class CarLoanDetailsSchema(BaseAnalysis):
 class GeneralCreditDetailsSchema(BaseAnalysis):
     """Блок: Рефинансирование / Потребительский"""
     required_amount: Optional[int] = Field(None, description="Сумма кредита, которая нужна")
-    total_debt: Optional[int] = Field(None, description="Общая задолженность по всем кредитам")
+    total_debt: Optional[int] = Field(None, description="Общая задолженность по всем кредитам (важно для рефинансирования)")
 
 class DocumentWaitSchema(BaseAnalysis):
     """Этап: Ожидание документов"""
     user_sent_file: bool = Field(description="Пользователь утверждает, что отправил файл или мы видим вложение")
     ready_to_proceed: bool = Field(description="Пользователь подтвердил, что готов предоставить отчеты")
-
+    user_comment: Optional[str] = Field(
+        None, description="Любой важный комментарий пользователя по документам (например, 'скину позже', 'у меня только один отчет')"
+    )
 # --- СЛОВАРЬ ШАГОВ (Константы для навигации) ---
 
 class Steps:
