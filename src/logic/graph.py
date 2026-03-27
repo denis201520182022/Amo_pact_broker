@@ -67,20 +67,27 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
     
     logger.info(f"🔍 [Node: Analyze] Step: {state['current_step']}")
     
-    # 1. Получаем конфигурацию для анализатора (схему и инструкцию)
+    # 1. Получаем конфигурацию для анализатора
     schema, instruction = prompt_manager.get_analyzer_config(state['current_step'])
     analyzer_sys, _ = prompt_manager.get_system_prompts()
     
-    # ЛОГИРУЕМ ЗАПРОС К АНАЛИЗАТОРУ (AI-1)
+    # Безопасное получение схемы для логов
+    # Если схема - это базовый BaseModel, используем пустой дикт
+    try:
+        schema_to_log = schema.model_json_schema() if schema is not BaseModel else {"info": "BaseModel"}
+    except Exception:
+        schema_to_log = {"info": "Could not parse schema"}
+
+    # ЛОГИРУЕМ ЗАПРОС К АНАЛИЗАТОРУ
     d_logger.log_section("AI-1 ANALYZER REQUEST", {
         "current_step": state['current_step'],
-        "system_prompt": analyzer_sys,
+        "system_prompt_preview": analyzer_sys[:100] + "...",
         "step_instruction": instruction,
-        "expected_pydantic_schema": schema.schema(),
-        "history_context_sent": state['messages'][-3:] # Контекста из 3 сообщений достаточно для анализа хода
+        "expected_schema": schema_to_log,
+        "history_context_sent": state['messages'][-3:] 
     })
 
-    # 2. Вызов OpenAI с поддержкой Structured Outputs
+    # 2. Вызов OpenAI
     analysis = await openai_service.analyze_message(
         messages=state['messages'][-3:], 
         response_model=schema,
@@ -88,7 +95,6 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
         instruction=instruction
     )
     
-    # Преобразуем Pydantic модель в словарь для LangGraph
     analysis_dict = analysis.model_dump() if analysis else {
         "step_completed": False, 
         "off_topic": True,
@@ -99,7 +105,6 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
     d_logger.log_section("AI-1 ANALYZER RESPONSE", analysis_dict)
     
     return {"analysis_result": analysis_dict}
-
 
 async def logic_node(state: DialogueState) -> Dict[str, Any]:
     """

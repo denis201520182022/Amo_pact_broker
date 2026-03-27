@@ -43,6 +43,8 @@ class PromptManager:
             Steps.QUALIFY_RESULT: CollateralDetailsSchema,
             
             Steps.SELECT_CREDIT_TYPE: CreditTypeSelectionSchema,
+            Steps.PRICING_INFO: BaseAnalysis, 
+            Steps.COURSE_INFO: BaseAnalysis,
             
             # Детали конкретных веток
             Steps.COLLATERAL_DETAILS: CollateralDetailsSchema,
