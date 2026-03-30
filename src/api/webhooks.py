@@ -38,6 +38,7 @@ async def pact_webhook(request: Request):
             return Response(status_code=200)
             
         data = json.loads(body)
+        logger.info(f"📥 [Pact] Получен вебхук: {data}")
         
         # 1. Фильтрация (согласно твоему логу)
         # Нам нужны только события 'create' и тип 'message'

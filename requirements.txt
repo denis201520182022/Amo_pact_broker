@@ -19,3 +19,5 @@ langchain-core
 pyyaml
 typing-extensions
 aiohttp-socks
+google-api-python-client
+google-auth

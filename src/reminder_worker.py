@@ -7,6 +7,7 @@ from src.core.config import settings
 from src.db.database import async_session_maker
 from src.db.models import Dialogue
 from src.services.pact.pact_api import pact_api
+from src.services.kb_service import kb_service
 
 logger = setup_logging("reminder_worker")
 
@@ -35,8 +36,19 @@ def is_working_hours() -> bool:
 async def check_reminders():
     logger.info("🚀 Reminder Worker started")
     
+    last_kb_update = 0
+    kb_interval = settings.KB_UPDATE_INTERVAL
+
     while True:
         try:
+            # --- ОБНОВЛЕНИЕ БАЗЫ ЗНАНИЙ ---
+            now_ts = time.time()
+            if now_ts - last_kb_update >= kb_interval:
+                logger.info("📅 Плановое обновление базы знаний...")
+                asyncio.create_task(kb_service.update_kb())
+                last_kb_update = now_ts
+            # -----------------------------
+
             if not is_working_hours():
                 logger.debug("🌙 Ночь в Москве. Спим 10 минут...")
                 await asyncio.sleep(600)

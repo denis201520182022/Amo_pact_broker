@@ -75,6 +75,11 @@ class PactAPI:
             # Если мы попали сюда, значит это не 403 в тесте, а другая ошибка (например 500)
             raise e
         except Exception as e:
+            if settings.TEST:
+                from src.utils.dialogue_logger import DialogueLogger
+                d_logger = DialogueLogger(conversation_id)
+                d_logger.log_event("pact_error", str(e))
+                
             logger.error(f"🚨 Ошибка при вызове Pact API: {str(e)}")
             raise
 

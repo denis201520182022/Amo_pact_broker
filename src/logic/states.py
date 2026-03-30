@@ -170,3 +170,4 @@ class Steps:
     
     # Финал
     FINAL_HANDOVER = "STEP_FINAL_HANDOVER"
+    CONSULT_FINAL = "STEP_CONSULT_FINAL"

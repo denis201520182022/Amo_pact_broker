@@ -10,3 +10,8 @@ logs
 /venv
 temp.md
 alembic/
+credentials.json
+debug_logs/
+scenary.txt
+scripts/
+src/services/kb_service.py

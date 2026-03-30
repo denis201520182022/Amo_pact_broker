@@ -66,6 +66,12 @@ class Settings(BaseSettings):
             return f"http://{self.PROXY_HOST}:{self.PROXY_PORT}"
         return None
 
+    # --- Knowledge Base ---
+    GOOGLE_DOC_ID: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
+    KB_REDIS_KEY: str = "knowledge_base"
+    KB_UPDATE_INTERVAL: int = 300 # 5 минут
+
     # --- Security ---
     WEBHOOK_SECRET: str
 

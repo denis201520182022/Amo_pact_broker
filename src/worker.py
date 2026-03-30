@@ -1,6 +1,7 @@
 import asyncio
 from typing import Any, Dict, List
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
+from sqlalchemy.orm.attributes import flag_modified
 from taskiq_redis import RedisAsyncResultBackend, ListQueueBroker
 from src.services.telegram.tg import tg_service
 from src.core.config import settings
@@ -18,17 +19,23 @@ from src.logic.states import Steps, DialogueState
 from src.logic.graph import SETTINGS_DATA
 from src.services.amocrm.amo_api import amo_api
 # Настраиваем логи для воркера
-from sqlalchemy import func
 from src.services.telegram.tg import tg_service
   # Укажи правильный путь до файла
 # logger = setup_logging("worker")
 import time
+import copy
 from datetime import datetime, timezone, timedelta
 
 def get_msk_time() -> str:
     """Возвращает текущее время по Москве в нужном формате"""
     msk_tz = timezone(timedelta(hours=3))
     return datetime.now(msk_tz).strftime("%Y-%m-%d %H:%M:%S MSK")
+
+def get_progress_bar(count: int, total: int = 3) -> str:
+    """Генерирует визуальный прогресс-бар из эмодзи"""
+    filled = "🟢" * min(count, total)
+    empty = "⚪️" * max(0, total - count)
+    return f"{filled}{empty}"
 # 1. Настройка брокера TaskIQ
 result_backend = RedisAsyncResultBackend(redis_url=settings.REDIS_URL)
 
@@ -190,8 +197,10 @@ async def process_pact_messages_task(conversation_id: str):
 
             new_messages = await redis_manager.get_buffer(conversation_id)
             if new_messages:
-                extracted = dict(dialogue.extracted_data or {})
-                if "received_files" not in extracted: extracted["received_files"] = []
+                # Глубокое копирование, чтобы избежать проблем с ссылками на объекты в сессии
+                extracted = copy.deepcopy(dialogue.extracted_data or {})
+                if "received_files" not in extracted: 
+                    extracted["received_files"] = []
                 
                 formatted = []
                 for m in new_messages:
@@ -218,7 +227,7 @@ async def process_pact_messages_task(conversation_id: str):
                                 extracted["received_files"].append(file_name)
                                 current_count = len(extracted["received_files"])
                                 
-                                # 1. Системное сообщение для ИИ (формат как просил: с временем и ID)
+                                # 1. Системное сообщение для ИИ (Новый файл)
                                 formatted.append({
                                     "role": "user", 
                                     "content": f"[SYSTEM COMMAND] Пользователь прислал pdf файл {file_name}. Всего файлов: {current_count}/3",
@@ -226,29 +235,59 @@ async def process_pact_messages_task(conversation_id: str):
                                     "timestamp_msk": get_msk_time()
                                 })
                                 
-                                # 2. ОТПРАВКА УВЕДОМЛЕНИЯ В ТЕЛЕГРАМ (Логика сохранена)
-                                client_name = extracted.get("name", "Неизвестный клиент")
-                                credit_type = extracted.get("credit_type", "Не определен")
+                                # 2. УВЕДОМЛЕНИЕ В ТЕЛЕГРАМ (Расширенное)
+                                client_name = extracted.get("name", "Неизвестный")
+                                city = extracted.get("city", "—")
+                                phone = extracted.get("phone", "—")
+                                credit_type = extracted.get("credit_type", "—")
+                                
+                                # Формируем строку параметров
+                                detail_parts = []
+                                if extracted.get("category"): detail_parts.append(extracted["category"])
+                                if extracted.get("market"): detail_parts.append(extracted["market"])
+                                details = f" ({', '.join(detail_parts)})" if detail_parts else ""
                                 
                                 amo_link = None
                                 if dialogue.amo_lead_id:
                                     amo_link = f"https://{settings.AMO_SUBDOMAIN}.amocrm.ru/leads/detail/{dialogue.amo_lead_id}"
                                 
                                 asyncio.create_task(tg_service.send_report_card(
-                                    title=f"📌 Новый файл от клиента: {client_name}",
+                                    title=f"📄 Новый файл: {file_name}",
                                     fields={
-                                        "Имя файла": file_name,
-                                        "Тип запроса": credit_type,
-                                        "Получено файлов": f"{current_count} из 3"
+                                        "👤 Клиент": f"{client_name} ({city})",
+                                        "📞 Телефон": f"<code>{phone}</code>",
+                                        "⚙️ Запрос": f"{credit_type}{details}",
+                                        "📊 Прогресс": f"{get_progress_bar(current_count)} ({current_count} из 3)"
                                     },
                                     link=amo_link
                                 ))
+                                logger.info(f"🔔 [Alert] Задание на отправку уведомления в ТГ создано (файл: {file_name})")
+
+                                if dialogue.amo_lead_id:
+                                    pipelines = SETTINGS_DATA.get('amocrm_pipelines', {})
+                                    asyncio.create_task(amo_api.update_lead(
+                                        lead_id=dialogue.amo_lead_id,
+                                        status_id=pipelines.get('status_ai_decision')
+                                    ))
+                            else:
+                                # Файл-дубликат. Сообщаем ИИ, что счетчик не вырос.
+                                current_count = len(extracted["received_files"])
+                                formatted.append({
+                                    "role": "user", 
+                                    "content": f"[SYSTEM COMMAND] Пользователь прислал ДУБЛИКАТ файла {file_name}. Счетчик файлов не изменился: {current_count}/3",
+                                    "message_id": f"sys_dup_{int(time.time() * 1000)}",
+                                    "timestamp_msk": get_msk_time()
+                                })
                 
                 # Синхронизируем и сохраняем историю
                 updated_history = list(dialogue.history)
                 updated_history.extend(formatted)
                 dialogue.history = updated_history
                 dialogue.extracted_data = extracted 
+                # ОБЯЗАТЕЛЬНО: Помечаем JSON поля для SQLAlchemy
+                flag_modified(dialogue, "extracted_data")
+                flag_modified(dialogue, "history")
+                
                 # ОБЯЗАТЕЛЬНО: Обновляем время и сбрасываем уровень напоминаний
                 dialogue.reminder_level = 0
                 dialogue.last_message_at = func.now()
@@ -317,7 +356,8 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
         "analysis_result": None,
         "ai_response": None,
         "is_completed": False,
-        "stop_factors_found": dialogue.extracted_data.get("stop_factors_found", False)
+        "stop_factors_found": dialogue.extracted_data.get("stop_factors_found", False),
+        "final_destination": dialogue.extracted_data.get("final_destination")
     }
 
     try:
@@ -366,6 +406,11 @@ async def perform_logic_and_reply(dialogue: Dialogue, session):
             dialogue.extracted_data = current_extracted
             
             # 6. ЛОГИКА CRM (Перевод сделки в другую воронку, если диалог завершен)
+            if settings.TEST:
+                from src.utils.dialogue_logger import DialogueLogger
+                d_logger = DialogueLogger(dialogue.pact_conversation_id)
+                d_logger.log_event("ai_reply", ai_reply_text)
+                
             if final_state.get("is_completed"):
                 dialogue.status = "completed"
                 await handle_crm_completion(dialogue, final_state)
@@ -399,26 +444,38 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
         logger.warning(f"⚠️ Нет amo_lead_id для диалога {dialogue.pact_conversation_id}")
         return
 
-    # ИСПРАВЛЕНИЕ: Извлекаем данные из final_state
     data = final_state.get('extracted_data', {})
     current_step = final_state.get('current_step')
-    dest = final_state.get('final_destination') 
-    
+    dest = final_state.get('final_destination') or data.get('final_destination') or data.get('direction')
     pipelines = SETTINGS_DATA.get('amocrm_pipelines', {})
+
     target_pipeline = None
+    target_status = None
 
-    # Логика выбора воронки
-    if dest == "course": 
+    # 1. Логика выбора КУДА переместить сделку
+    if dest in ["course"]: 
         target_pipeline = pipelines.get('course_id')
-    elif dest == "consultation": 
+        target_status = pipelines.get('status_course_new')
+    elif dest in ["consultation", "consult"]: 
         target_pipeline = pipelines.get('consultation_id')
+        target_status = pipelines.get('status_consult_new')
+    else:
+        # Если это обычное завершение (сбор данных окончен)
+        # Переводим в "Принимают решение" внутри текущей воронки ИИ
+        target_pipeline = pipelines.get('main_id')
+        target_status = pipelines.get('status_ai_decision')
 
-    if target_pipeline:
-        await amo_api.update_lead(lead_id=lead_id, pipeline_id=target_pipeline)
-        logger.info(f"🎯 Сделка {lead_id} переведена в воронку {target_pipeline}")
+    # 2. Выполняем обновление в amoCRM
+    if target_pipeline and target_status:
+        await amo_api.update_lead(
+            lead_id=lead_id, 
+            pipeline_id=target_pipeline, 
+            status_id=target_status
+        )
+        logger.info(f"🎯 Сделка {lead_id} переведена в воронку {target_pipeline} на статус {target_status}")
 
     # ИСПРАВЛЕНИЕ: Проверка стейта теперь корректна
-    if current_step in [Steps.FINAL_HANDOVER, Steps.CONSULT_INFO]:
+    if current_step in [Steps.FINAL_HANDOVER, Steps.CONSULT_FINAL, Steps.CONSULT_INFO]:
         summary = (
             "📋 АНКЕТА ИЗ БОТА:\n"
             f"👤 Имя: {data.get('name', '—')}\n"
@@ -426,9 +483,9 @@ async def handle_crm_completion(dialogue: Dialogue, final_state: Dict):
             f"📞 Телефон: {data.get('phone', '—')}\n"
             f"💰 Требуемая сумма: {data.get('required_amount') or data.get('car_cost') or '—'}\n"
             f"🏦 Вид кредитования: {data.get('credit_type', '—')}\n"
-            f"🏠 Вид залога: {data.get('sub_type', 'Нет залога')}\n"
-            f"📑 Собственник: {'Единственный' if data.get('is_sole_owner') else 'Несколько'}\n"
-            f"⚠️ Стоп-факторы: {', '.join(data.get('found_factors', [])) if data.get('found_factors') else 'Не обнаружены'}"
+            f"🏠 Вид залога: {data.get('sub_type', '—')}\n"
+            f"📑 Собственник: {'Единственный' if data.get('is_sole_owner') else '—'}\n"
+            f"⚠️ Стоп-факторы: {', '.join(data.get('found_factors', [])) if data.get('found_factors') else '—'}"
         )
         
         await amo_api.add_note(lead_id=lead_id, text=summary, note_type="service_message")

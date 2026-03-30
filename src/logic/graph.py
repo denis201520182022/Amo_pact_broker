@@ -1,7 +1,9 @@
 import os
 import yaml
 import json
+import copy
 from typing import Dict, Any, List, Optional
+from pydantic import BaseModel
 from langgraph.graph import StateGraph, END
 
 from src.logic.states import DialogueState, Steps
@@ -69,22 +71,26 @@ async def analyze_node(state: DialogueState) -> Dict[str, Any]:
     
     # 1. Получаем конфигурацию для анализатора
     schema, instruction = prompt_manager.get_analyzer_config(state['current_step'])
-    analyzer_sys, _ = prompt_manager.get_system_prompts()
+    analyzer_sys, _ = await prompt_manager.get_system_prompts()
     
     # Безопасное получение схемы для логов
-    # Если схема - это базовый BaseModel, используем пустой дикт
     try:
-        schema_to_log = schema.model_json_schema() if schema is not BaseModel else {"info": "BaseModel"}
-    except Exception:
-        schema_to_log = {"info": "Could not parse schema"}
+        if schema is BaseModel:
+            schema_to_log = {"info": "BaseModel (empty)"}
+        else:
+            # model_json_schema() - это метод класса в Pydantic v2
+            schema_to_log = schema.model_json_schema()
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось распарсить схему {schema} для логов: {e}")
+        schema_to_log = {"info": "Could not parse schema", "error": str(e), "class": str(schema)}
 
     # ЛОГИРУЕМ ЗАПРОС К АНАЛИЗАТОРУ
     d_logger.log_section("AI-1 ANALYZER REQUEST", {
         "current_step": state['current_step'],
-        "system_prompt_preview": analyzer_sys[:100] + "...",
+        "system_prompt": analyzer_sys,
         "step_instruction": instruction,
         "expected_schema": schema_to_log,
-        "history_context_sent": state['messages'][-3:] 
+        "history_context_sent": state['messages'] 
     })
 
     # 2. Вызов OpenAI
@@ -123,16 +129,22 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
 
     result = state.get('analysis_result') or {}
     current = state['current_step']
-    extracted = dict(state['extracted_data']) # Работаем с копией данных
+    extracted = copy.deepcopy(state['extracted_data']) # Глубокая копия для безопасности
     
     next_step = current 
     is_completed = False
     stop_factors_found = state.get('stop_factors_found', False)
-    final_destination = state.get('final_destination')
+    final_destination = state.get('final_destination') or extracted.get('final_destination')
+    
+    # Синхронизация: если есть направление, но нет метки воронки
+    if not final_destination and extracted.get('direction'):
+        mapping = {"consult": "consultation", "course": "course"}
+        final_destination = mapping.get(extracted['direction'])
     
     # Считаем файлы в реальном времени
     received_files = extracted.get('received_files', [])
     files_count = len(received_files)
+    logger.info(f"📂 [Logic] Files in state: {files_count} ({received_files})")
 
     # --- ПРИОРИТЕТ 1: ПРОВЕРКА СЧЕТЧИКА ФАЙЛОВ ---
     # Если файлов 3 или более, мгновенно переходим к финалу, игнорируя остальную логику
@@ -189,7 +201,8 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
         elif current == Steps.CONSULT_INFO:
             if result.get('agree_to_pay'):
                 extracted['paid_consult_agreed'] = True
-                next_step = Steps.DOCS_INSTRUCTION
+                next_step = Steps.CONSULT_FINAL
+                is_completed = True
             else:
                 # Отказ от оплаты -> возврат в меню
                 next_step = Steps.MAIN_MENU
@@ -288,11 +301,11 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
     else:
         # Если Анализатор не понял ответ (step_completed: false), 
         # мы остаемся на текущем шаге. Генератор (AI-2) увидит это и повторит вопрос.
-        logger.warning(f"⚠️ Ответ не распознан на шаге {current}. Повтор вопроса.")
+        logger.warning(f"⚠️ Данные для шага {current} не получены или не распознаны. Необходимо повторить вопрос переформулировав. Если собеседник задает вопрос, не игнорируй его")
         next_step = current
 
     # Финальная проверка завершения (для CRM)
-    if next_step in [Steps.COURSE_INFO, Steps.FINAL_HANDOVER]:
+    if next_step in [Steps.COURSE_INFO, Steps.FINAL_HANDOVER, Steps.CONSULT_FINAL]:
         is_completed = True
 
     # Логируем изменения
@@ -302,6 +315,9 @@ async def logic_node(state: DialogueState) -> Dict[str, Any]:
         old_data=old_data,
         new_data=extracted
     )
+
+    # Сохраняем final_destination в экстракт для персистентности между сообщениями
+    extracted['final_destination'] = final_destination
 
     return {
         "extracted_data": extracted,
@@ -324,7 +340,7 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
     logger.info(f"✍️ [Node: Generate] Writing reply for step: {state['current_step']}")
     
     # 1. Получаем системный промпт и специфическую инструкцию шага
-    _, generator_sys = prompt_manager.get_system_prompts()
+    _, generator_sys = await prompt_manager.get_system_prompts()
     base_instruction = prompt_manager.get_generator_instruction(state['current_step'])
     
     # 2. Формируем контекст извлеченных данных (Ground Truth)
@@ -343,7 +359,7 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
         # Если клиент ушел от темы — требуем настойчивости (Правило №3)
         movement_hint = (
             "\nКРИТИЧЕСКАЯ ПОДСКАЗКА: Пользователь не дал четкого ответа или ушел от темы. "
-            "Выполни ПРАВИЛО №3: проигнорируй его последнюю фразу и настойчиво, но вежливо ПОВТОРИ свой предыдущий вопрос."
+            "Если собеседник задает вопрос, не игнорируй его, а ответь на него и вернись к вопросу по сценарию"
         )
     else:
         # Если шаг успешно пройден — даем команду на движение вперед
@@ -372,9 +388,9 @@ async def generate_node(state: DialogueState) -> Dict[str, Any]:
     # ЛОГИРУЕМ ЗАПРОС К ГЕНЕРАТОРУ (AI-2)
     d_logger.log_section("AI-2 GENERATOR REQUEST", {
         "target_step": state['current_step'],
-        "system_prompt_preview": generator_sys[:200] + "...",
+        "system_prompt": generator_sys,
         "final_directive": final_extra_instruction,
-        "history_limit": 5
+        "history_sent": state['messages']
     })
     
     # 6. Генерация ответа

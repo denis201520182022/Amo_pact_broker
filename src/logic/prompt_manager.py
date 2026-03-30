@@ -14,8 +14,10 @@ from src.logic.states import (
     MortgageDetailsSchema,
     CarLoanDetailsSchema,
     GeneralCreditDetailsSchema,
-    DocumentWaitSchema
+    DocumentWaitSchema,
+    BaseAnalysis
 )
+from src.services.kb_service import kb_service
 
 class PromptManager:
     def __init__(self):
@@ -70,8 +72,8 @@ class PromptManager:
         """
         Возвращает схему и инструкцию для Анализатора (AI-1)
         """
-        # Получаем схему из маппинга. Если шага нет в маппинге — пустая базовая схема.
-        schema = self._schema_map.get(step_id, BaseModel)
+        # Получаем схему из маппинга. Если шага нет в маппинге — базовая схема (BaseAnalysis).
+        schema = self._schema_map.get(step_id, BaseAnalysis)
         
         # Получаем инструкцию из YAML
         step_config = self.prompts.get("steps", {}).get(step_id, {})
@@ -79,13 +81,25 @@ class PromptManager:
         
         return schema, instruction
 
-    def get_system_prompts(self) -> Tuple[str, str]:
+    async def get_system_prompts(self) -> Tuple[str, str]:
         """
         Возвращает системные промпты для Анализатора и Генератора.
         Соответствует ключам в prompts.yaml
         """
         analyzer_sys = self.prompts.get("analyzer_system", "")
-        generator_sys = self.prompts.get("generator_system", "") # Исправлен ключ
+        generator_sys = self.prompts.get("generator_system", "")
+        
+        # Получаем базу знаний из кеша
+        kb_content = await kb_service.get_kb_sync()
+        if kb_content:
+            kb_block = (
+                "\n\n--- БАЗА ЗНАНИЙ ---\n"
+                "Используй следующую информацию для ответов на вопросы пользователя:\n"
+                f"{kb_content}\n"
+                "-------------------\n"
+            )
+            generator_sys += kb_block
+            
         return analyzer_sys, generator_sys
 
     def get_generator_instruction(self, step_id: str) -> str:
