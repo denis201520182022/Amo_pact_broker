@@ -86,10 +86,44 @@ async def process_pact_messages_task(conversation_id: str):
     
     async with async_session_maker() as session:
         try:
+
+            # 1. ПЕРВЫМ ДЕЛОМ: Получаем новые сообщения из буфера Redis
+            new_messages = await redis_manager.get_buffer(conversation_id)
+            if not new_messages:
+                logger.debug(f"Буфер для {conversation_id} пуст. Выходим.")
+                return
+
             # 1. Проверяем существование диалога
             query = select(Dialogue).where(Dialogue.pact_conversation_id == conversation_id)
             result = await session.execute(query)
             dialogue = result.scalar_one_or_none()
+
+            # --- ЛОГИКА ТЕСТОВОГО РЕЖИМА И ТРИГГЕРА ---
+            if settings.TEST_MODE:
+                # Проверяем, есть ли триггер в новых сообщениях
+                trigger_received = any(
+                    settings.TEST_TRIGGER.lower() in m.get("text", "").lower() 
+                    for m in new_messages
+                )
+                
+                if trigger_received:
+                    # Если триггер получен — мы хотим "чистый старт"
+                    if dialogue:
+                        # Если в базе уже был диалог, удаляем его
+                        await session.delete(dialogue)
+                        await session.flush() # Выполняем удаление немедленно
+                        dialogue = None # Сбрасываем переменную, чтобы сработал блок создания ниже
+                        logger.info(f"🔄 [Test Mode] Старый диалог {conversation_id} удален для ПЕРЕЗАПУСКА.")
+                    else:
+                        logger.info(f"🚀 [Test Mode] Триггер найден! Создаем новый диалог для {conversation_id}")
+                
+                # Если триггера НЕТ и диалога в базе тоже НЕТ (первое сообщение без команды)
+                elif not dialogue:
+                    logger.info(f"🙊 [Test Mode] Диалог {conversation_id} проигнорирован (триггер не найден)")
+                    await redis_manager.delete_buffer(conversation_id)
+                    return # ВЫХОДИМ
+            # ------------------------------------------
+
 
             # 2. Если диалога нет — проверяем баланс и создаем
             if not dialogue:
@@ -195,7 +229,7 @@ async def process_pact_messages_task(conversation_id: str):
                 await redis_manager.delete_buffer(conversation_id)
                 return 
 
-            new_messages = await redis_manager.get_buffer(conversation_id)
+            
             if new_messages:
                 # Глубокое копирование, чтобы избежать проблем с ссылками на объекты в сессии
                 extracted = copy.deepcopy(dialogue.extracted_data or {})
@@ -204,15 +238,22 @@ async def process_pact_messages_task(conversation_id: str):
                 
                 formatted = []
                 for m in new_messages:
-                    # Извлекаем ID из Пакта или генерируем временный, если его нет
+                    # Извлекаем текст
+                    text_content = m.get("text", "").strip()
+                    
+                    # --- НОВОЕ: Пропускаем триггер, чтобы он не шел в ИИ ---
+                    if settings.TEST_MODE and text_content.lower() == settings.TEST_TRIGGER.lower():
+                        continue 
+                    # -----------------------------------------------------
+
                     msg_id = m.get("message_id") or f"user_{int(time.time() * 1000)}"
                     msk_now = get_msk_time()
 
                     # --- ОБРАБОТКА ТЕКСТА ---
-                    if m.get("text"):
+                    if text_content: # Если после strip() текст не пустой
                         formatted.append({
                             "role": "user",
-                            "content": m["text"],
+                            "content": text_content, # Используешь уже очищенный текст
                             "message_id": msg_id,
                             "timestamp_msk": msk_now
                         })

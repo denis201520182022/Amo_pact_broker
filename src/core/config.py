@@ -8,7 +8,9 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8", 
         extra="ignore"
     )
-    TEST: bool = False 
+    TEST: bool = False
+    TEST_MODE: bool = True  # Включить/выключить тестовый режим в диалогах
+    TEST_TRIGGER: str = "/up" 
     # --- Project ---
     PROJECT_NAME: str = "AI Broker Bot"
     DEBUG: bool = False

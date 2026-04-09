@@ -65,14 +65,14 @@ class Dialogue(Base):
 
     # Связи
     account: Mapped["Account"] = relationship(back_populates="dialogues")
-    llm_logs: Mapped[List["LlmLog"]] = relationship(back_populates="dialogue")
+    llm_logs: Mapped[List["LlmLog"]] = relationship(back_populates="dialogue", cascade="all, delete-orphan")
 
 class LlmLog(Base):
     """Логирование запросов к OpenAI"""
     __tablename__ = 'llm_logs'
     
     id: Mapped[int] = mapped_column(primary_key=True)
-    dialogue_id: Mapped[int] = mapped_column(ForeignKey('dialogues.id'))
+    dialogue_id: Mapped[int] = mapped_column(ForeignKey('dialogues.id', ondelete="CASCADE"))
     
     model: Mapped[str] = mapped_column(String(50)) 
     prompt_type: Mapped[str] = mapped_column(String(50)) 
