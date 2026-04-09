@@ -32,20 +32,26 @@ async def auth_middleware(handler, event, data):
     return await handler(event, data)
 
 # --- КЛАВИАТУРА ГЛАВНОГО МЕНЮ ---
-def get_main_kb():
+def get_main_kb(user_id: int):
     builder = InlineKeyboardBuilder()
+    
+    # Кнопка статистики доступна всем разрешенным
     builder.button(text="📊 Статистика", callback_data="stats")
-    builder.button(text="💰 Пополнить баланс", callback_data="add_balance")
-    builder.button(text="⚙️ Изменить тариф", callback_data="set_tariff")
-    # builder.button(text="🛑 Остановка", callback_data="system_stop")
-    builder.adjust(2)
+    
+    # Кнопки управления доступны только админам
+    if tg_service.is_admin(user_id):
+        builder.button(text="💰 Пополнить баланс", callback_data="add_balance")
+        builder.button(text="⚙️ Изменить тариф", callback_data="set_tariff")
+        # builder.button(text="🛑 Остановка", callback_data="system_stop")
+    
+    builder.adjust(1) # Делаем кнопки в столбик для красоты
     return builder.as_markup()
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
         "👋 Добро пожаловать в Админ-панель AI Broker!",
-        reply_markup=get_main_kb(),
+        reply_markup=get_main_kb(message.from_user.id),
         parse_mode="HTML"
     )
 
@@ -66,7 +72,7 @@ async def show_stats(callback: types.CallbackQuery):
             f"🏷 <b>Стоимость диалога:</b> {app_settings.tariffs.get('dialog_cost', 0)} руб.\n"
             f"🔔 <b>Порог алерта:</b> {app_settings.low_balance_threshold} руб."
         )
-        await callback.message.edit_text(text, reply_markup=get_main_kb(), parse_mode="HTML")
+        await callback.message.edit_text(text, reply_markup=get_main_kb(callback.from_user.id), parse_mode="HTML")
 
 # --- ПОПОЛНЕНИЕ БАЛАНСА ---
 @dp.callback_query(F.data == "add_balance")
@@ -86,7 +92,7 @@ async def process_balance(message: types.Message, state: FSMContext):
                 stg.is_low_balance_alert_sent = False
             await session.commit()
             
-        await message.answer(f"✅ Баланс успешно пополнен на {amount} руб.!", reply_markup=get_main_kb())
+        await message.answer(f"✅ Баланс успешно пополнен на {amount} руб.!", reply_markup=get_main_kb(message.from_user.id))
         await state.clear()
     except ValueError:
         await message.answer("❌ Ошибка! Введите число (например: 500 или 1000.50)")
@@ -109,7 +115,7 @@ async def process_tariff(message: types.Message, state: FSMContext):
             stg.tariffs = new_tariffs
             await session.commit()
             
-        await message.answer(f"✅ Тариф обновлен: {new_cost} руб. за диалог.", reply_markup=get_main_kb())
+        await message.answer(f"✅ Тариф обновлен: {new_cost} руб. за диалог.", reply_markup=get_main_kb(message.from_user.id))
         await state.clear()
     except ValueError:
         await message.answer("❌ Ошибка! Введите число.")

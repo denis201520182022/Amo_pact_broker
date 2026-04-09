@@ -1,3 +1,5 @@
+# src\services\telegram\tg.py
+
 import asyncio
 from typing import List, Optional, Union
 from aiogram import Bot
@@ -17,14 +19,24 @@ class TelegramService:
         self.bot = Bot(token=settings.TELEGRAM_BOT_TOKEN, session=session)
         self.admin_id = settings.TELEGRAM_ADMIN_CHAT_ID
         
-        # Список разрешенных ID из .env
+        # 1. Список ВСЕХ разрешенных ID (и админы, и пользователи)
         self.user_ids = [
             int(uid.strip()) 
             for uid in (settings.TELEGRAM_USER_IDS or "").split(",") 
             if uid.strip()
         ]
+        
+        # 2. Список только АДМИНОВ
+        self.admin_ids = [
+            int(aid.strip()) 
+            for aid in (settings.TELEGRAM_ADMIN_IDS or "").split(",") 
+            if aid.strip()
+        ]
         self.report_chat_id = settings.TELEGRAM_REPORT_CHAT_ID
-
+    def is_admin(self, user_id: int) -> bool:
+        """Проверка, является ли пользователь администратором"""
+        return user_id in self.admin_ids 
+        
     async def send_tech_alert(self, message: str):
         """Отправка технического алерта админу (ошибки системы)"""
         if not self.admin_id:
