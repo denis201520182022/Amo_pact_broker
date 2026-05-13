@@ -71,7 +71,9 @@ async def pact_webhook(request: Request):
             "user_name": contact_data.get("name", "Unknown")
         }
 
-        if not conversation_id or not payload["text"]:
+        # Разрешаем, если есть текст ИЛИ если список вложений не пуст
+        if not conversation_id or (not payload["text"] and not payload["attachments"]):
+            logger.debug(f"Игнорируем пустое сообщение без вложений для {conversation_id}")
             return Response(status_code=200)
 
          # Оставляем только текст, так как имена в Пакте и Амо часто не совпадают
