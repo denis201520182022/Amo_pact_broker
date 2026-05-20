@@ -1,0 +1,61 @@
+graph TD
+    START((Начало)) --> STEP_CONSENT["Согласие на ОПД <br/>(STEP_CONSENT)"]
+    
+    STEP_CONSENT -- Да --> STEP_NAME["Запрос имени <br/>(STEP_NAME)"]
+    STEP_CONSENT -- Нет --> STEP_CONSENT
+    
+    STEP_NAME --> STEP_PHONE["Запрос телефона <br/>(STEP_PHONE)"]
+    STEP_PHONE --> STEP_CITY["Запрос города <br/>(STEP_CITY)"]
+    STEP_CITY --> STEP_MAIN_MENU{"Главное меню <br/>(STEP_MAIN_MENU)"}
+    
+    STEP_MAIN_MENU -- 1. Кредит --> STEP_SF_SENIORITY["Проверка стажа <br/>(STEP_SF_SENIORITY)"]
+    STEP_MAIN_MENU -- 2. Курс --> STEP_COURSE_INFO["Информация о курсе <br/>(STEP_COURSE_INFO)"]
+    STEP_MAIN_MENU -- 3. Консультация --> STEP_CONSULT_INFO["Условия консультации <br/>(STEP_CONSULT_INFO)"]
+    STEP_MAIN_MENU -- 4. Стоимость --> STEP_PRICING_INFO["Информация о ценах <br/>(STEP_PRICING_INFO)"]
+    
+    %% Ветка Кредит (Стоп-факторы)
+    subgraph SF_BLOCK ["Блок Стоп-Факторов"]
+        STEP_SF_SENIORITY --> STEP_SF_DELAYS["Проверка просрочек <br/>(STEP_SF_DELAYS)"]
+        STEP_SF_DELAYS --> STEP_SF_FSSP["Проверка приставов <br/>(STEP_SF_FSSP)"]
+        STEP_SF_FSSP --> STEP_SF_MFO["Проверка микрозаймов <br/>(STEP_SF_MFO)"]
+        STEP_SF_MFO --> STEP_SF_BANKRUPTCY["Проверка банкротства <br/>(STEP_SF_BANKRUPTCY)"]
+    end
+    
+    STEP_SF_BANKRUPTCY -- Есть СФ --> STEP_QUALIFY_RESULT{"Предложение залога <br/>(STEP_QUALIFY_RESULT)"}
+    STEP_SF_BANKRUPTCY -- Нет СФ --> STEP_SELECT_CREDIT_TYPE{"Выбор типа кредита <br/>(STEP_SELECT_CREDIT_TYPE)"}
+    
+    STEP_QUALIFY_RESULT -- Согласен на залог --> STEP_COLLATERAL_DETAILS["Детали залога <br/>(STEP_COLLATERAL_DETAILS)"]
+    STEP_QUALIFY_RESULT -- Отказ --> END_VISITKA((Конец + Визитка))
+    
+    STEP_SELECT_CREDIT_TYPE -- Ипотека --> STEP_MORTGAGE_DETAILS["Детали ипотеки <br/>(STEP_MORTGAGE_DETAILS)"]
+    STEP_SELECT_CREDIT_TYPE -- Залоговый --> STEP_COLLATERAL_DETAILS
+    STEP_SELECT_CREDIT_TYPE -- Авто --> STEP_CAR_DETAILS["Детали автокредита <br/>(STEP_CAR_DETAILS)"]
+    STEP_SELECT_CREDIT_TYPE -- Рефинанс --> STEP_REFINANCE_DETAILS["Детали рефинансирования <br/>(STEP_REFINANCE_DETAILS)"]
+    STEP_SELECT_CREDIT_TYPE -- Потреб --> STEP_CONSUMER_DETAILS["Детали потребкредита <br/>(STEP_CONSUMER_DETAILS)"]
+    
+    STEP_MORTGAGE_DETAILS -- Рефинанс ипотеки --> STEP_REFINANCE_DETAILS
+    STEP_MORTGAGE_DETAILS -- Новая --> STEP_DOCS_INSTRUCTION["Инструкция по документам <br/>(STEP_DOCS_INSTRUCTION)"]
+    
+    STEP_COLLATERAL_DETAILS --> STEP_DOCS_INSTRUCTION
+    STEP_CAR_DETAILS --> STEP_DOCS_INSTRUCTION
+    STEP_REFINANCE_DETAILS --> STEP_DOCS_INSTRUCTION
+    STEP_CONSUMER_DETAILS --> STEP_DOCS_INSTRUCTION
+    
+    STEP_DOCS_INSTRUCTION -- Согласен --> STEP_DOCS_WAIT{"Ожидание файлов <br/>(STEP_DOCS_WAIT)"}
+    STEP_DOCS_INSTRUCTION -- Отказ --> END_VISITKA
+    
+    STEP_DOCS_WAIT -- 3+ файла --> STEP_FINAL_HANDOVER["Перевод к специалисту <br/>(STEP_FINAL_HANDOVER)"]
+    STEP_DOCS_WAIT -- В процессе --> STEP_DOCS_WAIT
+    
+    STEP_FINAL_HANDOVER --> END((ФИНАЛ: ТГ Чат))
+    
+    %% Ветка Курс
+    STEP_COURSE_INFO --> END_COURSE((Финал: Курс))
+    
+    %% Ветка Консультация
+    STEP_CONSULT_INFO -- Согласен --> STEP_CONSULT_FINAL["Подтверждение заявки <br/>(STEP_CONSULT_FINAL)"]
+    STEP_CONSULT_INFO -- Отказ --> STEP_MAIN_MENU
+    STEP_CONSULT_FINAL --> END_CONSULT((Финал: Специалист))
+    
+    %% Ветка Цены
+    STEP_PRICING_INFO --> STEP_MAIN_MENU
